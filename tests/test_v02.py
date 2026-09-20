@@ -40,6 +40,19 @@ def test_profiles_and_model_syntax(machine_config):
     assert models.list_profiles(machine_config, discovered)[0]["is_default"]
 
 
+def test_model_discovery_never_inherits_mcp_stdin(monkeypatch, machine_config):
+    captured = {}
+    class Result:
+        stdout = "provider model context\nllama-cpp C:/Models/Qwen.gguf 1K\n"
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return Result()
+    monkeypatch.setattr(models.shutil, "which", lambda command: command)
+    monkeypatch.setattr(models.subprocess, "run", fake_run)
+    assert models.discover_pi_models(machine_config) == ["llama-cpp/C:/Models/Qwen.gguf"]
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
 def test_off_hard_block_before_launch(tmp_path, monkeypatch, machine_config):
     root = tmp_path / "repo"; root.mkdir(); subprocess.run(["git", "init", "-q", str(root)], check=True)
     config.update_mode("OFF"); launched = []

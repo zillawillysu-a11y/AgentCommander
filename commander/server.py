@@ -54,7 +54,7 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
-    baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True)
+    baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if baseline.returncode == 0:
         spec["baseline_head"] = baseline.stdout.strip()
     else:

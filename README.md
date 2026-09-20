@@ -43,6 +43,7 @@ Source mode 保留 `python -m commander` STDIO MCP 與既有 bootstrap/doctor �
 ```text
 dist\AgentCommander\AgentCommander.exe
 dist\AgentCommander\AgentCommanderMCP.exe
+dist\AgentCommander\_internal\...
 dist\AgentCommander-Portable.zip
 ```
 

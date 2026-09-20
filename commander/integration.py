@@ -34,7 +34,7 @@ def remove_managed_block(path=None):
 def mcp_add_command(helper): return ["codex", "mcp", "add", "agent-commander", "--", str(Path(helper).resolve()), "mcp"]
 def _codex(command):
     argv = list(command); argv[0] = shutil.which(argv[0]) or argv[0]
-    return subprocess.run(argv, capture_output=True, text=True)
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True)
 def install_codex(helper):
     _codex(["codex", "mcp", "remove", "agent-commander"])
     result = _codex(mcp_add_command(helper)); result.check_returncode(); install_managed_block(); return True
