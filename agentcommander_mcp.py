@@ -1,4 +1,4 @@
-from .entrypoint import main
+from commander.entrypoint import main
 
 if __name__ == "__main__":
     main()

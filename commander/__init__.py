@@ -1,1 +1,3 @@
-"""AgentCommander V0.1."""
+"""AgentCommander V0.2.0."""
+
+__version__ = "0.2.0"

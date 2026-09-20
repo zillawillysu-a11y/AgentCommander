@@ -5,12 +5,14 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
+from .config import update_mode
 from .handoff import export_handoff, load_handoff
+from .models import discover_pi_models, list_profiles, resolve_profile
 from .pi_worker import launch
 from .task_store import FINAL, create_task, create_repair_task, list_tasks as store_list, read_json, repo_id, status, task_dir, write_json
 from .verifier import verify
 
-mcp = FastMCP("agent-commander")
+mcp = FastMCP("agent-commander", log_level="ERROR")
 
 
 def _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds):
@@ -33,8 +35,12 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
 
 
 @mcp.tool()
-def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int = 2700, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None) -> dict:
+def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int = 2700, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None) -> dict:
     """啟動全新 Pi/Qwen Milestone，立即回傳 durable task ID。"""
+    config = load_config()
+    if config["mode"] == "OFF":
+        raise ValueError("AGENT_COMMANDER_DISABLED")
+    selected_profile, pi_model = resolve_profile(model_profile, config)
     root = _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds)
     for relative in required_files or []:
         candidate = (root / relative).resolve()
@@ -44,7 +50,7 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         original = read_json(task_dir(repair_of) / "task.json")
         if Path(original["project_root"]).resolve() != root:
             raise ValueError("repair project_root 必須與原任務一致")
-    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "optional_context": optional_context[:8000], "required_files": required_files or []}
+    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "optional_context": optional_context[:8000], "required_files": required_files or [], "model_profile": selected_profile, "pi_model": pi_model}
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
@@ -68,6 +74,25 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         data.update(status="FAILED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat())
         write_json(folder / "status.json", data)
         return {"task_id": task_id, "status": "FAILED", "error": str(exc)}
+
+
+@mcp.tool()
+def get_agentcommander_status() -> dict:
+    """Return compact global mode, worker-profile, Pi, and runtime status."""
+    config = load_config(); models = discover_pi_models(config)
+    return {"mode": config["mode"], "default_profile": config["worker"].get("default_profile"), "pi_available": bool(models), "available_profiles": [x["profile"] for x in list_profiles(config, models) if x["available"]], "runtime_status": "READY"}
+
+
+@mcp.tool()
+def list_worker_models() -> list[dict]:
+    """List configured aliases and whether their Pi models are currently available."""
+    return list_profiles()
+
+
+@mcp.tool()
+def set_mode(mode: str) -> dict:
+    """Persist OFF, AUTO, or FORCE as the machine-wide default."""
+    return {"mode": update_mode(mode)["mode"]}
 
 
 @mcp.tool()

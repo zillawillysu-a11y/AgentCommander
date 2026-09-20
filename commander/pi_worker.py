@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ROOT, load_config
+from .entrypoint import worker_command
+from .models import pi_model_args
 from .pi_parser import parse_jsonl
 from .task_store import read_json, state_root, task_dir, write_json
 from .verifier import verify
@@ -25,7 +27,7 @@ def prompt(task_id, spec):
 def launch(task_id, base=None):
     base = Path(base) if base is not None else state_root()
     folder = task_dir(task_id, base)
-    runner = [sys.executable, "-m", "commander.pi_worker", task_id]
+    runner = worker_command(task_id)
     env = os.environ.copy()
     env["AGENT_COMMANDER_STATE_ROOT"] = str(base)
     kwargs = {"cwd": str(ROOT), "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -54,8 +56,9 @@ def run(task_id, base=None):
     executable = shutil.which(config["pi"]["command"]) or config["pi"]["command"]
     prompt_path = folder / "worker_prompt.md"
     prompt_path.write_text(prompt(task_id, spec), encoding="utf-8")
-    command = [executable, "--mode", "json", "--print", "--no-session", "--", f"@{prompt_path}", "Complete the attached worker task. Follow its result contract."]
-    write_json(folder / "metadata.json", {"invocation_flags": ["--mode", "json", "--print", "--no-session"], "fresh_session": True, "prompt_file": str(prompt_path), "project_root": spec["project_root"]})
+    model_args = pi_model_args(spec["pi_model"]) if spec.get("pi_model") else []
+    command = [executable, *model_args, "--mode", "json", "--print", "--no-session", "--", f"@{prompt_path}", "Complete the attached worker task. Follow its result contract."]
+    write_json(folder / "metadata.json", {"invocation_flags": command[1:command.index("--")], "model_profile": spec.get("model_profile"), "pi_model": spec.get("pi_model"), "fresh_session": True, "prompt_file": str(prompt_path), "project_root": spec["project_root"]})
     exit_code = None
     timed_out = False
     failure = None

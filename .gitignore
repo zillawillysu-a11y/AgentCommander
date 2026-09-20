@@ -17,3 +17,6 @@ id_ed25519*
 *secrets*.json
 *.log
 *.jsonl
+dist/
+build/
+*.toc

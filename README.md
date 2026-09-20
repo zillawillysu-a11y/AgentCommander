@@ -1,63 +1,51 @@
-# AgentCommander
+# AgentCommander 0.2.0
 
-AgentCommander 是 Codex CLI 的本機 STDIO MCP server。Codex 擔任 Commander，透過 AgentCommander 將實作 Milestone 交給 Pi 與既有的 Local Qwen。
+AgentCommander 讓 Codex 擔任 Commander，並在適合時透過 MCP 把實作里程碑交給 Pi / Local Qwen。Codex 保留規劃、審查、deterministic verification 與最終決策權。runtime state 固定存放在 `%LOCALAPPDATA%\AgentCommander`，不會寫入工作專案；既有 `.agentcommander/` portable handoff 仍受支援。
 
-`Codex → AgentCommander → Pi → Local Qwen → 自動驗證 → Codex 審查`
+## END USER
 
-每個 Milestone 都啟動全新的 Pi process，使用 `--no-session`。Worker prompt 透過 `@檔案` 傳入，並從 JSONL 確認 Pi 收到完整任務。Worker 完成後，AgentCommander 以派工時的 Git commit 為基線，檢查允許路徑與測試；Codex 只收到精簡結果。
+1. 下載並解壓縮 `AgentCommander-Portable.zip`。
+2. 執行 `AgentCommander.exe`，選擇 `AUTO`（建議）或其他模式。
+3. 在 **Worker Models** 從 Pi 已發現的模型建立別名，例如 `qwen-main`，並設為 Default。
+4. 按 **Install Codex Integration**，狀態顯示 READY 後即可關閉 GUI。
+5. 在 Orca 開啟任何 Git project，照常使用 Codex；不需手動啟動 Pi、輸入 `delegate_pi`，也不需每次提醒使用 AgentCommander。
 
-## 快速開始（Windows 11）
+GUI 只是設定控制程式，不是 daemon。關閉後 Codex 仍會按需啟動 `AgentCommanderMCP.exe mcp`。Portable 版內含 Python runtime；使用者電腦仍須有 Codex CLI、Pi、已配置的 Local Qwen，以及專案流程所需的 Git。
+
+### Modes
+
+- **OFF**：禁止 Pi delegation；`delegate_pi` 會以 `AGENT_COMMANDER_DISABLED` 硬性失敗。
+- **AUTO**：預設模式。Codex 對 substantial implementation、debugging、refactoring、repo investigation 與 tests 自行判斷是否委派。
+- **FORCE**：coding implementation 強烈優先委派；純問答、工具不可用或使用者明確要求不用時除外。
+
+使用者當次指示（例如「這次不要用 AgentCommander」）只覆蓋目前工作，不修改全域模式。
+
+設定檔位於 `%LOCALAPPDATA%\AgentCommander\config.json`。模型 profile 只引用 Pi 已配置的 model identifier；AgentCommander 不下載模型、不修改 Pi provider 設定，也不會在 profile 遺失時偷偷 fallback。
+
+## DEVELOPER
 
 ```powershell
 git clone https://github.com/zillawillysu-a11y/AgentCommander.git
 cd AgentCommander
-.\bootstrap.ps1
-.\doctor.ps1
+python -m pip install -r requirements.txt
+python -m pytest -q
+python -m commander
 ```
 
-`bootstrap.ps1` 安裝本專案缺少的 Python 依賴，並在目前的 `CODEX_HOME` 與標準 Codex CLI 設定註冊 `agent-commander` MCP；不會更動 Pi 模型或登入設定。亦可單獨執行 `install_mcp.bat`、`uninstall_mcp.bat`。安裝後重新開啟 Codex CLI。Orca 可作為前端，但不是必要條件。
-
-向 Codex 說：
-
-> 使用 AgentCommander 完成這個專案。你是 Commander。請把工作拆成合理的 Milestone。主要實作交給 Pi/Qwen。每個 Milestone 使用 Fresh Worker Context。你負責驗收、必要時要求修正。全部完成並通過驗收後再告訴我。
-
-## Runtime state
-
-預設位於 `%LOCALAPPDATA%\AgentCommander\`，不存入 AgentCommander 或目標專案的 Git repository：
-
-```text
-%LOCALAPPDATA%\AgentCommander\
-  state\
-    counter.txt
-    task_index\
-    repos\
-      <repo-id>\
-        repo.json
-        tasks\TASK-000001\...
-```
-
-`repo-id` 是目標 repository 正規化絕對路徑的 SHA256 前 16 個十六進位字元。Task ID 全域遞增，因此原有的 `get_task_status(task_id)` 等 MCP 呼叫不需增加參數。`repo.json` 保存 `project_root`、`repo_id`、`created_at`、`last_used_at`。完整 JSONL、stderr、PID、驗證 logs 與 Worker token metrics 都留在本機 runtime 目錄。可在不進 Git 的 `config.local.json` 設定 `runtime.state_root` 改變位置；預設值見 `config.example.json`。
-
-舊版的 `AgentCommander/state/tasks` **不會自動搬移或刪除**。AgentCommander 仍可唯讀查詢舊任務，新的 Task ID 會避開舊編號。
-
-## 可選的專案交接
-
-需要跨電腦繼續時，明確呼叫 MCP 工具 `export_project_handoff(project_root, decisions)`，在目標 repository 建立：
-
-```text
-.agentcommander/
-  STATUS.md
-  MILESTONES.json
-  DECISIONS.md
-```
-
-這三個檔案只含精簡狀態、Milestone 結果與重要決策，可自行審查後納入目標專案 Git。它們不包含 Worker 對話、JSONL、logs、PID 或 token 原始資料。`get_project_handoff` 可檢視內容。沒有 `.agentcommander` 時，派工照常運作；存在時，`delegate_pi` 會把有長度上限的交接摘要交給新的 Worker。換電腦後只需 clone/pull 目標專案，不需舊 Pi session 或舊 runtime state。
-
-## 設定與驗證
-
-`delegate_pi` 接受目標 Git repository、目標、驗收條件、允許路徑、驗證命令及逾時秒數。命令以 argv 陣列傳入，例如 `["python", "-m", "pytest", "-q"]`。一次只執行一個 Worker。Worker 自稱 PASS 不代表完成，必須通過自動驗證與 Codex 最終審查。
+Source mode 保留 `python -m commander` STDIO MCP 與既有 bootstrap/doctor 流程。建立 Windows Portable：
 
 ```powershell
-python -m pytest -q
-git diff --check
+.\build.ps1
 ```
+
+輸出：
+
+```text
+dist\AgentCommander\AgentCommander.exe
+dist\AgentCommander\AgentCommanderMCP.exe
+dist\AgentCommander-Portable.zip
+```
+
+`AgentCommanderMCP.exe` 支援 `mcp`、`worker <task-id>`、`doctor --json`。Codex integration 只管理名為 `agent-commander` 的 MCP 與全域 `AGENTS.md` 中界定清楚的 managed block；移除時不碰其他 MCP 或使用者規則。
+
+機器上的實際 model ID、credentials、auth、runtime state、worker logs 與建置輸出不得提交到公開 repository。

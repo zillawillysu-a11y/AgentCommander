@@ -125,6 +125,7 @@ def test_optional_handoff_and_clone_without_old_state(tmp_path, monkeypatch):
     new_state = tmp_path / "new machine runtime"
     monkeypatch.setattr(task_store, "state_root", lambda config=None: new_state)
     monkeypatch.setattr(server, "launch", lambda task_id: {"task_id": task_id, "status": "QUEUED"})
+    monkeypatch.setattr(server, "resolve_profile", lambda *args: ("test-profile", "test/model"))
     delegated = server.delegate_pi(str(clone), "Continue feature", ["works"], ["src/**"], [[sys.executable, "-c", "print('ok')"]])
     spec = task_store.read_json(task_store.task_dir(delegated["task_id"], new_state) / "task.json")
     assert "使用標準函式庫" in spec["portable_handoff"]
