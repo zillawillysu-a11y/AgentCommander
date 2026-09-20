@@ -3,8 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .tmp/
-state/*
-!state/.gitkeep
+state/
 config.local.json
 .env
 .env.*

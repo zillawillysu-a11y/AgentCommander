@@ -33,8 +33,8 @@ def test_config_fallback_and_override(tmp_path):
 
 def test_ids_persistence_and_interrupted(tmp_path):
     base = tmp_path / "任務 state"
-    a = create_task({"name": "一"}, base)
-    b = create_task({"name": "二"}, base)
+    a = create_task({"name": "一", "project_root": str(tmp_path / "目標")}, base)
+    b = create_task({"name": "二", "project_root": str(tmp_path / "目標")}, base)
     assert (a, b) == ("TASK-000001", "TASK-000002")
     assert read_json(task_dir(a, base) / "task.json")["name"] == "一"
     data = read_json(task_dir(a, base) / "status.json")
@@ -46,14 +46,15 @@ def test_ids_persistence_and_interrupted(tmp_path):
 
 def test_repair_limit(tmp_path):
     base = tmp_path / "tasks"
-    original = create_task({"objective": "first"}, base)
+    target = str(tmp_path / "target")
+    original = create_task({"objective": "first", "project_root": target}, base)
     data = read_json(task_dir(original, base) / "status.json")
     data["status"] = "FAILED"
     write_json(task_dir(original, base) / "status.json", data)
-    assert create_repair_task(original, {"objective": "repair"}, 2, base).endswith("REPAIR-1")
-    assert create_repair_task(original, {"objective": "repair"}, 2, base).endswith("REPAIR-2")
+    assert create_repair_task(original, {"objective": "repair", "project_root": target}, 2, base).endswith("REPAIR-1")
+    assert create_repair_task(original, {"objective": "repair", "project_root": target}, 2, base).endswith("REPAIR-2")
     with pytest.raises(ValueError, match="limit"):
-        create_repair_task(original, {}, 2, base)
+        create_repair_task(original, {"project_root": target}, 2, base)
 
 
 def test_parser_malformed_and_claim(tmp_path):

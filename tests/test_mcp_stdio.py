@@ -16,6 +16,6 @@ def test_stdio_mcp_discovery():
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {tool.name for tool in tools.tools}
-                assert {"delegate_pi", "get_task_status", "get_task_result", "verify_task", "list_tasks", "wait_for_task"} <= names
+                assert {"delegate_pi", "get_task_status", "get_task_result", "verify_task", "list_tasks", "wait_for_task", "get_project_handoff", "export_project_handoff"} <= names
 
     asyncio.run(check())

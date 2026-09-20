@@ -5,8 +5,9 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
+from .handoff import export_handoff, load_handoff
 from .pi_worker import launch
-from .task_store import TASKS, FINAL, create_task, create_repair_task, list_tasks as store_list, read_json, status, task_dir, write_json
+from .task_store import FINAL, create_task, create_repair_task, list_tasks as store_list, read_json, repo_id, status, task_dir, write_json
 from .verifier import verify
 
 mcp = FastMCP("agent-commander")
@@ -44,6 +45,9 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         if Path(original["project_root"]).resolve() != root:
             raise ValueError("repair project_root 必須與原任務一致")
     spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "optional_context": optional_context[:8000], "required_files": required_files or []}
+    handoff = load_handoff(root)
+    if handoff:
+        spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
     baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True)
     if baseline.returncode == 0:
         spec["baseline_head"] = baseline.stdout.strip()
@@ -55,7 +59,9 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         spec["baseline_is_tree"] = True
     task_id = create_repair_task(repair_of, spec, load_config()["pi"]["max_repairs"]) if repair_of else create_task(spec)
     try:
-        return launch(task_id)
+        launched = launch(task_id)
+        launched["repo_id"] = repo_id(root)
+        return launched
     except OSError as exc:
         folder = task_dir(task_id)
         data = read_json(folder / "status.json")
@@ -93,9 +99,22 @@ def verify_task(task_id: str) -> dict:
 
 
 @mcp.tool()
-def list_tasks() -> list[dict]:
+def list_tasks(project_root: str | None = None) -> list[dict]:
     """列出任務與狀態。"""
-    return store_list()
+    return store_list(project_root=project_root)
+
+
+@mcp.tool()
+def get_project_handoff(project_root: str) -> dict:
+    """讀取目標 repository 的可攜式精簡交接資料；資料夾不存在可正常運作。"""
+    data = load_handoff(project_root)
+    return {"project_root": str(Path(project_root).resolve()), "present": data is not None, "files": {name: content[:6000] for name, content in (data or {}).items()}, "truncated": any(len(content) > 6000 for content in (data or {}).values())}
+
+
+@mcp.tool()
+def export_project_handoff(project_root: str, decisions: str | None = None) -> dict:
+    """明確匯出三個可 Git tracking 的精簡交接檔；不匯出 logs。"""
+    return export_handoff(project_root, decisions)
 
 
 @mcp.tool()

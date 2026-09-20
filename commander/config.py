@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT = {"pi": {"command": "pi", "default_timeout_seconds": 2700, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True}, "output": {"max_return_lines": 150}}
+DEFAULT = {"pi": {"command": "pi", "default_timeout_seconds": 2700, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
 
 
 def load_config(root=ROOT):

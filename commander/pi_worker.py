@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import ROOT, load_config
 from .pi_parser import parse_jsonl
-from .task_store import TASKS, read_json, status, task_dir, write_json
+from .task_store import read_json, state_root, task_dir, write_json
 from .verifier import verify
 
 
@@ -22,11 +22,12 @@ def prompt(task_id, spec):
     return template.replace("{{TASK}}", json.dumps(values, ensure_ascii=False, indent=2))
 
 
-def launch(task_id, base=TASKS):
+def launch(task_id, base=None):
+    base = Path(base) if base is not None else state_root()
     folder = task_dir(task_id, base)
     runner = [sys.executable, "-m", "commander.pi_worker", task_id]
     env = os.environ.copy()
-    env["AGENT_COMMANDER_TASKS"] = str(base)
+    env["AGENT_COMMANDER_STATE_ROOT"] = str(base)
     kwargs = {"cwd": str(ROOT), "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
@@ -40,7 +41,8 @@ def launch(task_id, base=TASKS):
     return {"task_id": task_id, "status": "RUNNING", "pid": proc.pid}
 
 
-def run(task_id, base=TASKS):
+def run(task_id, base=None):
+    base = Path(base) if base is not None else state_root()
     folder = task_dir(task_id, base)
     spec = read_json(folder / "task.json")
     config = load_config()
@@ -87,4 +89,4 @@ def run(task_id, base=TASKS):
 
 
 if __name__ == "__main__":
-    run(sys.argv[1], Path(os.environ.get("AGENT_COMMANDER_TASKS", TASKS)))
+    run(sys.argv[1], Path(os.environ.get("AGENT_COMMANDER_STATE_ROOT", state_root())))

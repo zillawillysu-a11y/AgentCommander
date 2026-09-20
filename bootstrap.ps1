@@ -10,6 +10,8 @@ if ($LASTEXITCODE -ne 0) {
     python -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
+python -c 'from commander.task_store import state_root; state_root().mkdir(parents=True, exist_ok=True)' *> $null
+if ($LASTEXITCODE -ne 0) { Write-Host '無法建立本機 runtime 目錄。'; exit 1 }
 & "$PSScriptRoot\install_mcp.bat"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 & "$PSScriptRoot\doctor.ps1"
