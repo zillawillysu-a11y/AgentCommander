@@ -9,7 +9,7 @@ from .config import update_mode
 from .handoff import export_handoff, load_handoff
 from .models import discover_pi_models, list_profiles, resolve_profile
 from .pi_worker import launch
-from .task_store import FINAL, create_task, create_repair_task, list_tasks as store_list, read_json, repo_id, status, task_dir, write_json
+from .task_store import ACTIVE, FINAL, assign_worker_slot, claim_worker_slot, create_task, create_repair_task, list_tasks as store_list, read_json, release_worker_slot, repo_id, status, task_dir, write_json
 from .verifier import verify
 
 mcp = FastMCP("agent-commander", log_level="ERROR")
@@ -42,7 +42,7 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
         raise ValueError("verification_commands 必須是 argv 陣列清單")
     if timeout_seconds < 1 or timeout_seconds > MAX_WORKER_TIMEOUT:
         raise ValueError(f"timeout_seconds 範圍為 1–{MAX_WORKER_TIMEOUT}")
-    if any(s["status"] in ("QUEUED", "RUNNING") for s in store_list()):
+    if any(s["status"] in ACTIVE for s in store_list()):
         raise ValueError("V0.1 同時只能執行一個 Pi Worker")
     return root
 
@@ -77,17 +77,28 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
             raise ValueError("無法建立 Git 基線")
         spec["baseline_head"] = empty_tree.stdout.decode("ascii").strip()
         spec["baseline_is_tree"] = True
-    task_id = create_repair_task(repair_of, spec, load_config()["pi"]["max_repairs"]) if repair_of else create_task(spec)
+    claim_worker_slot()
+    task_id = None
     try:
+        task_id = create_repair_task(repair_of, spec, load_config()["pi"]["max_repairs"]) if repair_of else create_task(spec)
+        assign_worker_slot(task_id)
         launched = launch(task_id)
         launched["repo_id"] = repo_id(root)
         return launched
     except OSError as exc:
+        if task_id is None:
+            release_worker_slot("")
+            raise
         folder = task_dir(task_id)
         data = read_json(folder / "status.json")
         data.update(status="FAILED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat())
         write_json(folder / "status.json", data)
+        release_worker_slot(task_id)
         return {"task_id": task_id, "status": "FAILED", "error": str(exc)}
+    except Exception:
+        if task_id is None:
+            release_worker_slot("")
+        raise
 
 
 @mcp.tool()

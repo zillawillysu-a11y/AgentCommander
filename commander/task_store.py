@@ -13,6 +13,7 @@ from .config import ROOT, load_config
 
 LEGACY_TASKS = ROOT / "state" / "tasks"
 FINAL = {"COMPLETED", "FAILED", "TIMED_OUT", "INTERRUPTED"}
+ACTIVE = {"QUEUED", "RUNNING", "TERMINATING", "TERMINATION_FAILED", "ORPHAN_WORKER"}
 TASK_ID = re.compile(r"TASK-\d{6,}(?:-REPAIR-\d+)?")
 
 
@@ -196,9 +197,63 @@ def pid_alive(pid):
             return False
 
 
+def worker_slot_path(base=None):
+    return Path(base) / "state" / "worker_slot.json" if base is not None else state_root() / "state" / "worker_slot.json"
+
+
+def claim_worker_slot(base=None):
+    """Atomically reserve the one global worker slot before task creation."""
+    base = Path(base) if base is not None else state_root()
+    blockers = [item for item in list_tasks(base) if item.get("status") in ACTIVE]
+    if blockers:
+        raise ValueError(f"WORKER_SLOT_BUSY: {blockers[0]['task_id']} {blockers[0]['status']}")
+    path = worker_slot_path(base)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump({"status": "CLAIMING", "owner_pid": os.getpid(), "claimed_at": utc_now()}, stream)
+            return path
+        except FileExistsError:
+            try:
+                slot = read_json(path)
+                task_id = slot.get("task_id")
+                if task_id and status(task_id, base).get("status") in ACTIVE:
+                    raise ValueError(f"WORKER_SLOT_BUSY: {task_id}")
+                age = time.time() - path.stat().st_mtime
+                if not task_id and age < 60:
+                    raise ValueError("WORKER_SLOT_BUSY: delegation claim in progress")
+                path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+    raise ValueError("WORKER_SLOT_BUSY")
+
+
+def assign_worker_slot(task_id, base=None):
+    base = Path(base) if base is not None else state_root()
+    path = worker_slot_path(base)
+    slot = read_json(path)
+    slot.update(task_id=task_id, status="OWNED")
+    write_json(path, slot)
+
+
+def release_worker_slot(task_id, base=None):
+    base = Path(base) if base is not None else state_root()
+    path = worker_slot_path(base)
+    if not path.exists():
+        return
+    slot = read_json(path)
+    if slot.get("task_id") in (None, task_id):
+        path.unlink(missing_ok=True)
+
+
 def status(task_id, base=None):
     folder = task_dir(task_id, base)
     data = read_json(folder / "status.json")
+    if not folder.is_relative_to(LEGACY_TASKS):
+        from .process_control import reconcile_status
+        data = reconcile_status(folder, data)
     if data["status"] == "RUNNING" and not pid_alive(data.get("pid")):
         data.update(status="INTERRUPTED", finished_at=utc_now())
         if not folder.is_relative_to(LEGACY_TASKS):
