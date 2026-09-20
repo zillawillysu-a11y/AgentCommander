@@ -50,8 +50,10 @@ def run(task_id, base=TASKS):
     raw = folder / "worker.jsonl"
     stderr = folder / "worker.stderr.log"
     executable = shutil.which(config["pi"]["command"]) or config["pi"]["command"]
-    command = [executable, "--mode", "json", "--print", "--no-session", "--", prompt(task_id, spec)]
-    write_json(folder / "metadata.json", {"invocation_flags": ["--mode", "json", "--print", "--no-session"], "fresh_session": True, "project_root": spec["project_root"]})
+    prompt_path = folder / "worker_prompt.md"
+    prompt_path.write_text(prompt(task_id, spec), encoding="utf-8")
+    command = [executable, "--mode", "json", "--print", "--no-session", "--", f"@{prompt_path}", "Complete the attached worker task. Follow its result contract."]
+    write_json(folder / "metadata.json", {"invocation_flags": ["--mode", "json", "--print", "--no-session"], "fresh_session": True, "prompt_file": str(prompt_path), "project_root": spec["project_root"]})
     exit_code = None
     timed_out = False
     failure = None
@@ -67,7 +69,7 @@ def run(task_id, base=TASKS):
                 proc.wait()
     except OSError as exc:
         failure = f"Pi launch failed: {exc}"
-    parsed = parse_jsonl(raw) if raw.exists() else {"claim": None, "final_message": None, "usage": {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable"}, "malformed_lines": 0}
+    parsed = parse_jsonl(raw, task_id, spec["objective"]) if raw.exists() else {"claim": None, "final_message": None, "usage": {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable"}, "malformed_lines": 0, "prompt_delivered": False}
     claim = parsed["claim"] if isinstance(parsed["claim"], dict) else {}
     if claim:
         write_json(folder / "worker_claim.json", claim)
@@ -76,8 +78,9 @@ def run(task_id, base=TASKS):
     except Exception as exc:
         verification = {"status": "FAIL", "errors": [f"VERIFIER_ERROR: {exc}"]}
     write_json(folder / "verification.json", verification)
-    final_status = "TIMED_OUT" if timed_out else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" else "FAILED"
-    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": "TIMED_OUT" if timed_out else "EXITED" if exit_code is not None else "LAUNCH_FAILED", "status": final_status, "exit_code": exit_code, "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": [str(p)[:200] for p in claim.get("files_changed", [])[:30]] if isinstance(claim.get("files_changed"), list) else [], "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "warnings": [failure] if failure else [], "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
+    final_status = "TIMED_OUT" if timed_out else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
+    warnings = ([failure] if failure else []) + ([] if parsed["prompt_delivered"] or exit_code is None else ["WORKER_PROMPT_NOT_DELIVERED"])
+    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": "TIMED_OUT" if timed_out else "EXITED" if exit_code is not None else "LAUNCH_FAILED", "status": final_status, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": [str(p)[:200] for p in claim.get("files_changed", [])[:30]] if isinstance(claim.get("files_changed"), list) else [], "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
     write_json(folder / "result.json", result)
     data.update(status=final_status, finished_at=now(), exit_code=exit_code)
     write_json(folder / "status.json", data)

@@ -32,7 +32,7 @@ def command(argv, cwd, timeout=300, log_prefix=None):
         return {"exit_code": None, "stdout_tail": stdout_tail, "stderr_tail": bounded(stderr_tail + "\n" + str(exc))}
 
 
-def changed_paths(root):
+def changed_paths(root, baseline_head=None, head_exists=True):
     result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, capture_output=True)
     if result.returncode:
         raise RuntimeError("git status failed")
@@ -43,6 +43,11 @@ def changed_paths(root):
         entry = entries[index]
         paths.append(entry[3:].replace("\\", "/"))
         index += 2 if entry[:2] in ("R ", " R", "C ", " C") else 1
+    if baseline_head and head_exists:
+        committed = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", baseline_head, "HEAD"], cwd=root, capture_output=True)
+        if committed.returncode:
+            raise RuntimeError("git baseline diff failed")
+        paths.extend(p.replace("\\", "/") for p in committed.stdout.decode("utf-8", "replace").split("\0") if p)
     return sorted(set(paths))
 
 
@@ -62,7 +67,13 @@ def verify(spec, log_dir=None):
     if not root.is_dir() or not (root / ".git").exists():
         return {"status": "FAIL", "errors": ["PROJECT_ROOT_INVALID"], "checks": []}
     errors = []
-    paths = changed_paths(root)
+    baseline_head = spec.get("baseline_head")
+    head_exists = command(["git", "rev-parse", "--verify", "HEAD"], root)["exit_code"] == 0
+    if baseline_head and not spec.get("baseline_is_tree"):
+        ancestor = command(["git", "merge-base", "--is-ancestor", baseline_head, "HEAD"], root)
+        if ancestor["exit_code"] != 0:
+            errors.append("BASELINE_NOT_ANCESTOR")
+    paths = changed_paths(root, baseline_head, head_exists)
     outside = [p for p in paths if not allowed(p, spec["allowed_paths"])]
     if outside:
         errors.append("OUTSIDE_ALLOWED_PATHS")
@@ -72,9 +83,10 @@ def verify(spec, log_dir=None):
             errors.append("OUTSIDE_PROJECT_SYMLINK")
     diff_check = command(["git", "diff", "--check"], root)
     staged_check = command(["git", "diff", "--cached", "--check"], root)
-    if diff_check["exit_code"] or staged_check["exit_code"]:
+    baseline_check = command(["git", "diff", "--check", baseline_head, "HEAD"], root) if baseline_head and head_exists else {"exit_code": 0}
+    if diff_check["exit_code"] or staged_check["exit_code"] or baseline_check["exit_code"]:
         errors.append("GIT_DIFF_CHECK_FAILED")
-    stats = command(["git", "diff", "HEAD", "--numstat"], root)
+    stats = command(["git", "diff", baseline_head or "HEAD", "--numstat"], root)
     insertions = deletions = 0
     for line in stats["stdout_tail"].splitlines():
         columns = line.split("\t")

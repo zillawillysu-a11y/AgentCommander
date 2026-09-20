@@ -17,6 +17,13 @@ $models = @(pi --list-models 2>$null)
 if ($models.Count -gt 1 -and ($models -join "`n") -match '(?i)qwen') { Write-Host "Local Model`tPASS" } else { Write-Host "Local Model`tFAIL（Pi 模型清單沒有 Qwen）"; $failed = $true }
 $mcp = @(codex mcp list 2>$null)
 if (($mcp -join "`n") -match 'agent-commander') { Write-Host "MCP`tPASS" } else { Write-Host "MCP`tFAIL（執行 .\install_mcp.bat）"; $failed = $true }
+if ($env:CODEX_HOME) {
+    $activeCodexHome = $env:CODEX_HOME
+    Remove-Item Env:CODEX_HOME
+    $defaultMcp = @(codex mcp list 2>$null)
+    $env:CODEX_HOME = $activeCodexHome
+    if (($defaultMcp -join "`n") -match 'agent-commander') { Write-Host "標準 Codex CLI`tPASS" } else { Write-Host "標準 Codex CLI`tFAIL（執行 .\install_mcp.bat）"; $failed = $true }
+}
 if (Get-Command orca -ErrorAction SilentlyContinue) { Write-Host "Orca`tPASS" } else { Write-Host "Orca`tOPTIONAL" }
 if ($failed) { Write-Host 'RESULT: NOT READY'; exit 1 }
 Write-Host 'RESULT: READY'

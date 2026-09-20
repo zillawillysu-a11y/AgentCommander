@@ -2,8 +2,9 @@ import json
 import re
 
 
-def parse_jsonl(path):
+def parse_jsonl(path, expected_task_id=None, expected_objective=None):
     final = None
+    prompt_delivered = False if expected_task_id else None
     usage = {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable", "cache_read_tokens": "unavailable", "cache_write_tokens": "unavailable"}
     malformed = 0
     with open(path, encoding="utf-8", errors="replace") as stream:
@@ -17,6 +18,11 @@ def parse_jsonl(path):
                 continue
             message = event.get("message", {})
             if isinstance(message, dict):
+                if message.get("role") == "user" and expected_task_id:
+                    content = message.get("content", [])
+                    user_text = "\n".join(x.get("text", "") for x in content if isinstance(x, dict)) if isinstance(content, list) else str(content)
+                    if expected_task_id in user_text and (not expected_objective or expected_objective in user_text):
+                        prompt_delivered = True
                 if message.get("role") == "assistant":
                     content = message.get("content", [])
                     parts = [x.get("text", "") for x in content if isinstance(x, dict) and x.get("type") == "text"] if isinstance(content, list) else [str(content)]
@@ -39,4 +45,4 @@ def parse_jsonl(path):
                 claim = json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-    return {"claim": claim, "final_message": final[-4000:] if final else None, "usage": usage, "malformed_lines": malformed}
+    return {"claim": claim, "final_message": final[-4000:] if final else None, "usage": usage, "malformed_lines": malformed, "prompt_delivered": prompt_delivered}

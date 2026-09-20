@@ -1,4 +1,5 @@
 import time
+import subprocess
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -43,6 +44,15 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         if Path(original["project_root"]).resolve() != root:
             raise ValueError("repair project_root 必須與原任務一致")
     spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "optional_context": optional_context[:8000], "required_files": required_files or []}
+    baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True)
+    if baseline.returncode == 0:
+        spec["baseline_head"] = baseline.stdout.strip()
+    else:
+        empty_tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=root, input=b"", capture_output=True)
+        if empty_tree.returncode:
+            raise ValueError("無法建立 Git 基線")
+        spec["baseline_head"] = empty_tree.stdout.decode("ascii").strip()
+        spec["baseline_is_tree"] = True
     task_id = create_repair_task(repair_of, spec, load_config()["pi"]["max_repairs"]) if repair_of else create_task(spec)
     try:
         return launch(task_id)
@@ -68,7 +78,7 @@ def get_task_result(task_id: str) -> dict:
     if not path.exists():
         return {"task_id": task_id, "status": status(task_id)["status"], "result": "尚未產生"}
     data = read_json(path)
-    keys = ("task_id", "milestone", "worker_status", "status", "exit_code", "worker_claim_status", "worker_summary", "worker_files_changed", "usage", "malformed_jsonl_lines", "verification", "warnings", "artifacts")
+    keys = ("task_id", "milestone", "worker_status", "status", "exit_code", "prompt_delivered", "worker_claim_status", "worker_summary", "worker_files_changed", "usage", "malformed_jsonl_lines", "verification", "warnings", "artifacts")
     return {key: data[key] for key in keys if key in data}
 
 

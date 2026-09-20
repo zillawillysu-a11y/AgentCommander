@@ -66,6 +66,16 @@ def test_parser_malformed_and_claim(tmp_path):
     assert bounded("\n".join(map(str, range(200))), 2) == "198\n199"
 
 
+def test_parser_detects_truncated_worker_prompt(tmp_path):
+    file = tmp_path / "events.jsonl"
+    user = {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": "Only the first line"}]}}
+    file.write_text(json.dumps(user) + "\n", encoding="utf-8")
+    assert parse_jsonl(file, "TASK-000123", "Build store")["prompt_delivered"] is False
+    user["message"]["content"][0]["text"] = "TASK-000123 Build store"
+    file.write_text(json.dumps(user) + "\n", encoding="utf-8")
+    assert parse_jsonl(file, "TASK-000123", "Build store")["prompt_delivered"] is True
+
+
 def test_git_and_allowed_paths(tmp_path):
     root = repo(tmp_path / "含 空格 中文")
     (root / "src").mkdir()
@@ -79,6 +89,34 @@ def test_git_and_allowed_paths(tmp_path):
     (root / "README.md").write_text("oops\n")
     result = verify(spec(root))
     assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
+
+
+def test_committed_worker_changes_still_checked(tmp_path):
+    root = repo(tmp_path / "committed")
+    baseline = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    (root / "README.md").write_text("outside\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "worker commit"], check=True)
+    data = spec(root)
+    data["baseline_head"] = baseline
+    result = verify(data)
+    assert result["changed_paths"] == ["README.md"]
+    assert result["insertions"] == 1
+    assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
+
+
+def test_unborn_repository_baseline(tmp_path):
+    root = tmp_path / "new"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=root, input=b"", capture_output=True, check=True).stdout.decode().strip()
+    data = spec(root)
+    data.update(baseline_head=tree, baseline_is_tree=True)
+    (root / "README.md").write_text("outside\n", encoding="utf-8")
+    assert "OUTSIDE_ALLOWED_PATHS" in verify(data)["errors"]
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "worker commit"], check=True)
+    assert "OUTSIDE_ALLOWED_PATHS" in verify(data)["errors"]
 
 
 def test_verification_fail_and_diff_check(tmp_path):
@@ -127,3 +165,7 @@ def test_worker_timeout(tmp_path, monkeypatch):
     pi_worker.run(task_id, base)
     result = read_json(task_dir(task_id, base) / "result.json")
     assert result["status"] == "TIMED_OUT"
+    prompt_file = task_dir(task_id, base) / "worker_prompt.md"
+    assert prompt_file.exists()
+    assert "TASK SPECIFICATION" in prompt_file.read_text(encoding="utf-8")
+    assert read_json(task_dir(task_id, base) / "metadata.json")["fresh_session"] is True

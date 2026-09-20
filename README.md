@@ -4,7 +4,7 @@ AgentCommander 是 Codex CLI 的本機 STDIO MCP server。Codex 擔任 Commander
 
 `Codex → AgentCommander → Pi → Local Qwen → 自動驗證 → Codex 審查`
 
-每個 Milestone 啟動全新的 Pi process，使用 `--no-session`，避免舊對話造成 context 膨脹。Worker 完成後，AgentCommander 自動檢查 Git、允許修改的路徑與測試，只把精簡結果交給 Codex；完整 JSONL 留在本機 `state/`。
+每個 Milestone 啟動全新的 Pi process，使用 `--no-session`，避免舊對話造成 context 膨脹。Worker prompt 透過 `@檔案` 傳入，並從 JSONL 確認 Pi 收到完整任務。Worker 完成後，AgentCommander 以派工時的 Git commit 為基線，自動檢查允許修改的路徑與測試，只把精簡結果交給 Codex；完整 JSONL 留在本機 `state/`。
 
 ## 快速開始（Windows 11）
 
@@ -15,7 +15,7 @@ cd AgentCommander
 .\doctor.ps1
 ```
 
-`bootstrap.ps1` 會安裝本專案缺少的 Python 依賴並註冊 `agent-commander` MCP；不會更動 Pi 模型或登入設定。亦可單獨執行 `install_mcp.bat`、`uninstall_mcp.bat`。安裝後重新開啟 Codex CLI；Orca 可作為前端，但不是必要條件。
+`bootstrap.ps1` 會安裝本專案缺少的 Python 依賴，並在目前的 `CODEX_HOME` 與標準 Codex CLI 設定註冊 `agent-commander` MCP；不會更動 Pi 模型或登入設定。亦可單獨執行 `install_mcp.bat`、`uninstall_mcp.bat`。安裝後重新開啟 Codex CLI；Orca 可作為前端，但不是必要條件。
 
 向 Codex 說：
 
