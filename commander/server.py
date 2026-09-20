@@ -13,6 +13,19 @@ from .task_store import FINAL, create_task, create_repair_task, list_tasks as st
 from .verifier import verify
 
 mcp = FastMCP("agent-commander", log_level="ERROR")
+WORKER_TIMEOUTS = {"SMALL": 1800, "NORMAL": 3600, "LARGE": 5400}
+MAX_WORKER_TIMEOUT = 14400
+
+
+def select_worker_timeout(task_scope="NORMAL", requested=None, repair_of=None):
+    """Choose a bounded worker lifetime; unrelated to wait_for_task polling."""
+    scope = str(task_scope).upper()
+    if scope not in WORKER_TIMEOUTS:
+        raise ValueError("task_scope must be SMALL, NORMAL, or LARGE")
+    timeout = requested if requested is not None else WORKER_TIMEOUTS["SMALL" if repair_of else scope]
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout < 1 or timeout > MAX_WORKER_TIMEOUT:
+        raise ValueError(f"timeout_seconds range is 1–{MAX_WORKER_TIMEOUT}")
+    return timeout
 
 
 def _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds):
@@ -27,19 +40,20 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
             raise ValueError("allowed_paths 必須是 repository 內的相對路徑")
     if not isinstance(verification_commands, list) or any(not isinstance(cmd, list) or not cmd or not all(isinstance(arg, str) for arg in cmd) for cmd in verification_commands):
         raise ValueError("verification_commands 必須是 argv 陣列清單")
-    if timeout_seconds < 1 or timeout_seconds > 14400:
-        raise ValueError("timeout_seconds 範圍為 1–14400")
+    if timeout_seconds < 1 or timeout_seconds > MAX_WORKER_TIMEOUT:
+        raise ValueError(f"timeout_seconds 範圍為 1–{MAX_WORKER_TIMEOUT}")
     if any(s["status"] in ("QUEUED", "RUNNING") for s in store_list()):
         raise ValueError("V0.1 同時只能執行一個 Pi Worker")
     return root
 
 
 @mcp.tool()
-def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int = 2700, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None) -> dict:
-    """啟動全新 Pi/Qwen Milestone，立即回傳 durable task ID。"""
+def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL") -> dict:
+    """啟動全新 Pi/Qwen Milestone。task_scope: SMALL=1800, NORMAL=3600, LARGE=5400 秒；repair 預設 SMALL。"""
     config = load_config()
     if config["mode"] == "OFF":
         raise ValueError("AGENT_COMMANDER_DISABLED")
+    timeout_seconds = select_worker_timeout(task_scope, timeout_seconds, repair_of)
     selected_profile, pi_model = resolve_profile(model_profile, config)
     root = _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds)
     for relative in required_files or []:

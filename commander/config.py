@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODES = {"OFF", "AUTO", "FORCE"}
-DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 2700, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
+DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
 
 def local_data_root():
     value = os.environ.get("LOCALAPPDATA")

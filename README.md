@@ -20,6 +20,8 @@ GUI 只是設定控制程式，不是 daemon。關閉後 Codex 仍會按需啟�
 
 使用者當次指示（例如「這次不要用 AgentCommander」）只覆蓋目前工作，不修改全域模式。
 
+Worker lifetime 依工作範圍選擇：小型或 repair 為 1800 秒、一般 substantial implementation 為 3600 秒、明顯大型 milestone 或大型 repository refactor 為 5400 秒；仍受 14,400 秒安全上限約束。`wait_for_task` timeout 只控制 polling，不會改變 worker lifetime。
+
 設定檔位於 `%LOCALAPPDATA%\AgentCommander\config.json`。模型 profile 只引用 Pi 已配置的 model identifier；AgentCommander 不下載模型、不修改 Pi provider 設定，也不會在 profile 遺失時偷偷 fallback。
 
 ## DEVELOPER

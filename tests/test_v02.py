@@ -31,6 +31,25 @@ def test_invalid_mode(machine_config):
         config.update_mode("sometimes")
 
 
+def test_worker_timeout_selection():
+    assert server.select_worker_timeout("SMALL") == 1800
+    assert server.select_worker_timeout("NORMAL") == 3600
+    assert server.select_worker_timeout("LARGE") == 5400
+    assert server.select_worker_timeout("LARGE", repair_of="TASK-000001") == 1800
+    assert server.select_worker_timeout("NORMAL", requested=4200) == 4200
+    with pytest.raises(ValueError, match="task_scope"):
+        server.select_worker_timeout("HUGE")
+    with pytest.raises(ValueError, match="14400"):
+        server.select_worker_timeout("LARGE", requested=14401)
+
+
+def test_managed_guidance_contains_timeout_policy():
+    assert "SMALL or repair 1800s" in integration.RULES
+    assert "normal substantial implementation 3600s" in integration.RULES
+    assert "large milestone" in integration.RULES and "5400s" in integration.RULES
+    assert "wait_for_task" in integration.RULES and "independent" in integration.RULES
+
+
 def test_profiles_and_model_syntax(machine_config):
     discovered = ["llama-cpp/C:/Models/Qwen.gguf"]
     assert models.resolve_profile(config=machine_config, discovered=discovered) == ("qwen-main", discovered[0])

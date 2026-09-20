@@ -1,6 +1,6 @@
 {
   "mode": "AUTO",
-  "pi": {"command": "pi", "default_timeout_seconds": 2700, "max_repairs": 2},
+  "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2},
   "worker": {"language": "en", "fresh_session": true, "default_profile": "qwen-main"},
   "models": {"qwen-main": {"pi_model": "<machine-local Pi model identifier>"}},
   "output": {"max_return_lines": 150},
