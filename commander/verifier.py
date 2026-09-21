@@ -60,7 +60,9 @@ def changed_paths(root, baseline_head=None, head_exists=True):
 def allowed(path, patterns):
     path = path.replace("\\", "/")
     for pattern in patterns:
-        pattern = pattern.replace("\\", "/").removeprefix("./")
+        pattern = pattern.replace("\\", "/").removeprefix("./").rstrip("/")
+        if path == pattern or (not any(char in pattern for char in "*?[") and path.startswith(pattern + "/")):
+            return True
         if pattern.endswith("/**") and (path == pattern[:-3] or path.startswith(pattern[:-2])):
             return True
         if fnmatch.fnmatchcase(path, pattern):

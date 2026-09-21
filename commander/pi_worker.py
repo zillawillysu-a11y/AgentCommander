@@ -26,6 +26,29 @@ def elapsed_seconds(started_at, finished_at):
         return "unavailable"
 
 
+def consume_output_usage(path, offset=0, pending=b""):
+    """Read newly completed Pi JSONL records and return assistant output usage."""
+    if not Path(path).exists():
+        return 0, offset, pending
+    with Path(path).open("rb") as stream:
+        stream.seek(offset)
+        chunk = stream.read()
+        offset = stream.tell()
+    lines = (pending + chunk).split(b"\n")
+    pending = lines.pop() if lines else b""
+    output = 0
+    for line in lines:
+        try:
+            event = json.loads(line.decode("utf-8", "replace"))
+            message = event.get("message", {})
+            usage = message.get("usage", {}) if isinstance(message, dict) else {}
+            if event.get("type") == "message_end" and message.get("role") == "assistant" and isinstance(usage.get("output"), int):
+                output += usage["output"]
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return output, offset, pending
+
+
 def prompt(task_id, spec):
     template = (ROOT / "prompts" / "pi_worker_en.md").read_text(encoding="utf-8")
     values = {"task_id": task_id, **spec}
@@ -69,6 +92,7 @@ def run(task_id, base=None):
     write_json(folder / "metadata.json", {"invocation_flags": command[1:command.index("--")], "model_profile": spec.get("model_profile"), "pi_model": spec.get("pi_model"), "fresh_session": True, "prompt_file": str(prompt_path), "project_root": spec["project_root"]})
     exit_code = None
     timed_out = False
+    budget_reached = False
     termination_failed = False
     failure = None
     job = None
@@ -85,15 +109,35 @@ def run(task_id, base=None):
             write_json(folder / "worker_process.json", record)
             deadline = __import__("time").monotonic() + spec["timeout_seconds"]
             last_snapshot = 0.0
+            usage_offset = observed_output = 0
+            usage_pending = b""
             while proc.poll() is None and __import__("time").monotonic() < deadline:
                 moment = __import__("time").monotonic()
                 if moment - last_snapshot >= 1:
+                    added, usage_offset, usage_pending = consume_output_usage(raw, usage_offset, usage_pending)
+                    observed_output += added
                     record["descendants"] = merge_identities(record["descendants"], capture_tree(record["pi_root"]))
+                    record["observed_output_tokens"] = observed_output
                     record["last_observed_at"] = now()
                     write_json(folder / "worker_process.json", record)
                     last_snapshot = moment
+                    limit = spec.get("max_output_tokens")
+                    if isinstance(limit, int) and observed_output >= limit:
+                        budget_reached = True
+                        record["termination_reason"] = "OUTPUT_LIMIT_REACHED"
+                        write_json(folder / "worker_process.json", record)
+                        if job.assigned:
+                            job.close()
+                        termination = terminate_task(task_id, base)
+                        termination_failed = not termination["confirmed_gone"]
+                        if not termination_failed:
+                            try:
+                                exit_code = proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                termination_failed = True
+                        break
                 __import__("time").sleep(0.1)
-            if proc.poll() is None:
+            if proc.poll() is None and not budget_reached:
                 timed_out = True
                 record["descendants"] = merge_identities(record["descendants"], capture_tree(record["pi_root"]))
                 record["termination_method_hint"] = "job-close" if job.assigned else "process-tree"
@@ -107,7 +151,7 @@ def run(task_id, base=None):
                         exit_code = proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         termination_failed = True
-            else:
+            elif not budget_reached:
                 exit_code = proc.returncode
                 record["descendants"] = merge_identities(record["descendants"], capture_tree(record["pi_root"]))
                 write_json(folder / "worker_process.json", record)
@@ -134,16 +178,17 @@ def run(task_id, base=None):
     write_json(folder / "verification.json", verification)
     output_limit = spec.get("max_output_tokens")
     output_value = parsed.get("usage", {}).get("output_tokens")
-    output_limited = isinstance(output_limit, int) and isinstance(output_value, int) and output_value >= output_limit
-    final_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "OUTPUT_LIMIT_REACHED" if output_limited and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
+    output_limited = budget_reached or (isinstance(output_limit, int) and isinstance(output_value, int) and output_value >= output_limit)
+    final_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "OUTPUT_LIMIT_REACHED" if output_limited and verification["status"] == "PASS" and parsed["prompt_delivered"] else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
     warnings = ([failure] if failure else []) + ([] if parsed["prompt_delivered"] or exit_code is None else ["WORKER_PROMPT_NOT_DELIVERED"])
     finished_at = now()
     test_checks = verification.get("checks", []) if isinstance(verification, dict) else []
     tests_status = "PASS" if test_checks and all(item.get("exit_code") == 0 for item in test_checks if item.get("type") == "command") else "FAIL" if any(item.get("type") == "command" and item.get("exit_code") != 0 for item in test_checks) else "UNAVAILABLE"
-    worker_process_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "EXITED" if exit_code is not None else "LAUNCH_FAILED"
+    worker_process_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "BUDGET_STOPPED" if budget_reached else "EXITED" if exit_code is not None else "LAUNCH_FAILED"
     if output_limited:
         warnings.append(f"OUTPUT_LIMIT_REACHED:{output_limit}")
-    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status, "checks": test_checks}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": verification.get("errors", [])}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited)}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": 1 if spec.get("repair_of") else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
+    acceptance_reasons = list(verification.get("errors", [])) + (["OUTPUT_LIMIT_REACHED"] if output_limited else [])
+    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status, "checks": test_checks}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": acceptance_reasons}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited)}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": 1 if spec.get("repair_of") else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
     write_json(folder / "result.json", result)
     data.update(status=final_status, finished_at=finished_at, exit_code=exit_code)
     if termination_failed:

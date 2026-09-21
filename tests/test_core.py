@@ -93,6 +93,12 @@ def test_git_and_allowed_paths(tmp_path):
     assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
 
 
+def test_plain_directory_allowed_path_includes_descendants():
+    assert allowed("src/todo.py", ["src"])
+    assert allowed("tests/unit/test_todo.py", ["tests/"])
+    assert not allowed("src2/todo.py", ["src"])
+
+
 def test_changed_paths_git_status_timeout_is_bounded(tmp_path, monkeypatch):
     root = repo(tmp_path / "git-timeout")
     def timeout(*args, **kwargs):

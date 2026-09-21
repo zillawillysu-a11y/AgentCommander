@@ -33,6 +33,23 @@ def make_fake_pi(folder):
     return wrapper
 
 
+def make_budget_pi(folder):
+    script = folder / "budget_pi.py"
+    script.write_text(
+        "import json,os,subprocess,sys,time\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)'])\n"
+        "open(os.path.join(os.getcwd(),'budget-child.pid'),'w').write(str(child.pid))\n"
+        "task_id=os.environ['FAKE_TASK_ID']; objective=os.environ['FAKE_OBJECTIVE']\n"
+        "print(json.dumps({'type':'message_end','message':{'role':'user','content':[{'type':'text','text':task_id+' '+objective}]}}),flush=True)\n"
+        "print(json.dumps({'type':'message_end','message':{'role':'assistant','content':[{'type':'text','text':'partial'}],'usage':{'input':1,'output':25,'cacheRead':0,'cacheWrite':0}}}),flush=True)\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    wrapper = folder / "budget_pi.cmd"
+    wrapper.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+    return wrapper
+
+
 def task_spec(root, timeout=.5):
     return {"project_root": str(root), "objective": "timeout tree", "acceptance_criteria": ["terminated"], "allowed_paths": ["*.pid"], "verification_commands": [[sys.executable, "-c", "pass"]], "timeout_seconds": timeout, "required_files": []}
 
@@ -79,6 +96,32 @@ def test_atomic_slot_prevents_two_workers(tmp_path):
     task_store.claim_worker_slot(base)
     with pytest.raises(ValueError, match="WORKER_SLOT_BUSY"):
         task_store.claim_worker_slot(base)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-tree integration")
+def test_output_budget_stops_owned_tree_and_preserves_partial_result(tmp_path, monkeypatch):
+    base = tmp_path / "runtime-budget"
+    root = git_repo(tmp_path / "budget-project")
+    wrapper = make_budget_pi(tmp_path)
+    spec = task_spec(root, 30)
+    spec["max_output_tokens"] = 20
+    task_store.claim_worker_slot(base)
+    task_id = task_store.create_task(spec, base)
+    task_store.assign_worker_slot(task_id, base)
+    monkeypatch.setattr(pi_worker, "load_config", lambda: {"pi": {"command": str(wrapper)}})
+    monkeypatch.setenv("FAKE_TASK_ID", task_id)
+    monkeypatch.setenv("FAKE_OBJECTIVE", spec["objective"])
+    pi_worker.run(task_id, base)
+
+    result = task_store.read_json(task_store.task_dir(task_id, base) / "result.json")
+    termination = task_store.read_json(task_store.task_dir(task_id, base) / "termination.json")
+    assert result["status"] == "OUTPUT_LIMIT_REACHED"
+    assert result["worker_process_result"]["status"] == "BUDGET_STOPPED"
+    assert result["budget"]["partial_result_preserved"] is True
+    assert result["usage"]["output_tokens"] == 25
+    assert termination["confirmed_gone"] is True
+    assert not psutil.pid_exists(int((root / "budget-child.pid").read_text()))
+    assert not task_store.worker_slot_path(base).exists()
 
 
 @pytest.mark.parametrize("state", ["QUEUED", "RUNNING", "TERMINATING", "TERMINATION_FAILED", "ORPHAN_WORKER"])
@@ -171,3 +214,28 @@ def test_packaged_helper_kills_child_tree(tmp_path):
     task_store.assign_worker_slot(next_task, base)
     assert next_task != task_id
     task_store.release_worker_slot(next_task, base)
+
+
+@pytest.mark.skipif(os.name != "nt" or not os.environ.get("AGENTCOMMANDER_PACKAGED_HELPER"), reason="set packaged helper path")
+def test_packaged_helper_enforces_output_budget(tmp_path):
+    helper = Path(os.environ["AGENTCOMMANDER_PACKAGED_HELPER"])
+    local = tmp_path / "Local App Data Budget"
+    base = local / "AgentCommander"
+    root = git_repo(tmp_path / "packaged budget project")
+    wrapper = make_budget_pi(tmp_path)
+    base.mkdir(parents=True)
+    (base / "config.json").write_text(json.dumps({"pi": {"command": str(wrapper)}}), encoding="utf-8")
+    spec = task_spec(root, 30)
+    spec["max_output_tokens"] = 20
+    task_store.claim_worker_slot(base)
+    task_id = task_store.create_task(spec, base)
+    task_store.assign_worker_slot(task_id, base)
+    env = os.environ.copy()
+    env.update(LOCALAPPDATA=str(local), AGENT_COMMANDER_STATE_ROOT=str(base), FAKE_TASK_ID=task_id, FAKE_OBJECTIVE=spec["objective"])
+    completed = subprocess.run([str(helper), "worker", task_id], env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
+    assert completed.returncode == 0
+    result = task_store.read_json(task_store.task_dir(task_id, base) / "result.json")
+    assert result["status"] == "OUTPUT_LIMIT_REACHED"
+    assert result["worker_process_result"]["status"] == "BUDGET_STOPPED"
+    assert result["budget"]["output_tokens"] == 25
+    assert not psutil.pid_exists(int((root / "budget-child.pid").read_text()))
