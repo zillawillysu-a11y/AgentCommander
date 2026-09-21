@@ -8,6 +8,7 @@ from .doctor import run_doctor
 from .entrypoint import helper_path
 from .integration import install_codex, remove_codex
 from .models import discover_pi_models
+from .task_store import list_tasks
 
 class App(tk.Tk):
     def __init__(self):
@@ -24,7 +25,9 @@ class App(tk.Tk):
         config = load_config(); config["mode"] = self.mode.get(); save_config(config); self.refresh()
     def refresh(self):
         data = run_doctor(); config = load_config(); self.mode.set(config["mode"]); self.default.set(f"Default Worker: {config['worker'].get('default_profile') or 'Not selected'}")
-        c = data["checks"]; self.status.set("Status:\n" + "\n".join((f"Codex Integration   {'READY' if c['codex_integration'] else 'NOT INSTALLED'}", f"MCP                 {'READY' if c['codex'] else 'FAIL'}", f"Pi                  {'READY' if c['pi'] else 'FAIL'}", f"Local Qwen          {'READY' if c['pi_models'] else 'FAIL'}", f"Runtime             {'READY' if c['runtime'] else 'FAIL'}")))
+        tasks = list_tasks(); latest = tasks[-1] if tasks else None
+        worker = f"Latest Task         {latest['task_id']}  {latest['status']}" if latest else "Latest Task         NONE"
+        c = data["checks"]; self.status.set("Status:\n" + "\n".join((f"Codex Integration   {'READY' if c['codex_integration'] else 'NOT INSTALLED'}", f"MCP                 {'READY' if c['codex'] else 'FAIL'}", f"Pi                  {'READY' if c['pi'] else 'FAIL'}", f"Local Qwen          {'READY' if c['pi_models'] else 'FAIL'}", f"Runtime             {'READY' if c['runtime'] else 'FAIL'}", worker)))
     def install(self):
         hp = helper_path()
         if hp is None or not hp.exists(): messagebox.showerror("AgentCommander", "請從 Portable 版本執行整合安裝。")

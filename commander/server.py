@@ -87,6 +87,8 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         assign_worker_slot(task_id)
         launched = launch(task_id)
         launched["repo_id"] = repo_id(root)
+        launched["commander_action"] = "END_TURN_WHILE_WORKER_RUNS"
+        launched["polling_policy"] = "DO_NOT_LOOP_WAIT_FOR_TASK; resume when the user returns"
         return launched
     except OSError as exc:
         if task_id is None:
@@ -108,7 +110,9 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
 def get_agentcommander_status() -> dict:
     """Return compact global mode, worker-profile, Pi, and runtime status."""
     config = load_config(); models = discover_pi_models(config)
-    return {"mode": config["mode"], "default_profile": config["worker"].get("default_profile"), "pi_available": bool(models), "available_profiles": [x["profile"] for x in list_profiles(config, models) if x["available"]], "runtime_status": "READY"}
+    tasks = store_list(); latest = tasks[-1] if tasks else None
+    latest_task = {key: latest.get(key) for key in ("task_id", "status", "started_at", "finished_at") if latest.get(key) is not None} if latest else None
+    return {"mode": config["mode"], "default_profile": config["worker"].get("default_profile"), "pi_available": bool(models), "available_profiles": [x["profile"] for x in list_profiles(config, models) if x["available"]], "runtime_status": "READY", "latest_task": latest_task}
 
 
 @mcp.tool()
@@ -170,7 +174,7 @@ def export_project_handoff(project_root: str, decisions: str | None = None) -> d
     return export_handoff(project_root, decisions)
 
 
-@mcp.tool()
+@mcp.tool(description="Wait once when completion is expected. Never call this in a polling loop; end the Codex turn instead.")
 def wait_for_task(task_id: str, timeout_seconds: int = 600) -> dict:
     """在本機等待任務結束，避免高頻 polling。"""
     deadline = time.monotonic() + min(max(timeout_seconds, 1), 3600)

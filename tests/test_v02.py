@@ -42,6 +42,8 @@ def test_output_budget_is_persisted_on_delegation(tmp_path, monkeypatch, machine
     spec = json.loads((Path(config.local_data_root()) / "state" / "repos" / result["repo_id"] / "tasks" / result["task_id"] / "task.json").read_text(encoding="utf-8"))
     assert spec["timeout_seconds"] == 1800
     assert spec["max_output_tokens"] == 123
+    assert result["commander_action"] == "END_TURN_WHILE_WORKER_RUNS"
+    assert "DO_NOT_LOOP" in result["polling_policy"]
 
 
 def test_worker_timeout_selection():
@@ -57,10 +59,21 @@ def test_worker_timeout_selection():
 
 
 def test_managed_guidance_contains_timeout_policy():
-    assert "SMALL or repair 1800s" in integration.RULES
-    assert "normal substantial implementation 3600s" in integration.RULES
-    assert "large milestone" in integration.RULES and "5400s" in integration.RULES
-    assert "wait_for_task" in integration.RULES and "independent" in integration.RULES
+    assert "SMALL/repair 1800s" in integration.RULES
+    assert "normal substantial work 3600s" in integration.RULES
+    assert "large milestones" in integration.RULES and "5400s" in integration.RULES
+    assert "do not loop `wait_for_task`" in integration.RULES
+    assert "omit `max_output_tokens` for normal/large work" in integration.RULES
+    assert "at or below 30%" in integration.RULES
+    assert "accept the work without re-investigating" in integration.RULES
+
+
+def test_status_exposes_latest_task(monkeypatch, machine_config):
+    monkeypatch.setattr(server, "discover_pi_models", lambda config: ["test/model"])
+    monkeypatch.setattr(server, "list_profiles", lambda config, models: [{"profile": "qwen-main", "available": True}])
+    monkeypatch.setattr(server, "store_list", lambda: [{"task_id": "TASK-000123", "status": "RUNNING", "started_at": "now", "project_root": "hidden"}])
+    result = server.get_agentcommander_status()
+    assert result["latest_task"] == {"task_id": "TASK-000123", "status": "RUNNING", "started_at": "now"}
 
 
 def test_profiles_and_model_syntax(machine_config):

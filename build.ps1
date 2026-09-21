@@ -5,6 +5,7 @@ Set-Location $root
 Remove-Item -LiteralPath 'dist\AgentCommander.exe' -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath 'dist\AgentCommanderMCP.exe' -Force -ErrorAction SilentlyContinue
 python -m PyInstaller --noconfirm --clean AgentCommander.spec
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 $portable = Join-Path $root 'dist\AgentCommander'
 $zip = Join-Path $root 'dist\AgentCommander-Portable.zip'
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip }
