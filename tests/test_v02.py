@@ -149,3 +149,16 @@ def test_benchmark_prompt_pins_each_canonical_project_root(tmp_path):
         assert str(project.resolve()) in prompt
         assert result["expected_project_root"] == str(project.resolve())
         assert result["actual_project_root"] is None
+
+
+def test_delegation_auto_selects_existing_benchmark_report(tmp_path, monkeypatch, machine_config):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "init"], check=True)
+    (root / "BENCHMARK_RESULT.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(server, "resolve_profile", lambda *args: ("qwen-main", "test/model"))
+    monkeypatch.setattr(server, "launch", lambda task_id: {"task_id": task_id, "status": "QUEUED"})
+    result = server.delegate_pi(str(root), "small", ["done"], ["src/**"], [[sys.executable, "-c", "pass"]])
+    spec = json.loads((Path(config.local_data_root()) / "state" / "repos" / result["repo_id"] / "tasks" / result["task_id"] / "task.json").read_text(encoding="utf-8"))
+    assert spec["completion_report"] == "BENCHMARK_RESULT.json"

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from commander.config import DEFAULT
 from commander.loop_guard import LoopGuard
 from commander import server
@@ -119,3 +121,14 @@ def test_task_kind_validation(tmp_path):
         assert "task_kind" in str(exc)
     else:
         raise AssertionError("invalid task kind accepted")
+
+
+def test_non_git_project_error_explains_how_to_initialize(tmp_path):
+    root = tmp_path / "plain folder"
+    root.mkdir()
+    with pytest.raises(ValueError) as captured:
+        server._validate(str(root), "work", ["done"], ["src/**"], [["pytest"]], 10, "IMPLEMENT")
+    message = str(captured.value)
+    assert "PROJECT_ROOT_NOT_GIT_REPOSITORY" in message
+    assert f'git -C "{root.resolve()}" init' in message
+    assert "不需要 GitHub" in message

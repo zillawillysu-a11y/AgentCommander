@@ -19,4 +19,8 @@ id_ed25519*
 *.jsonl
 dist/
 build/
+/build-vnext/
+/dist-vnext/
+/build-*/
+/dist-*/
 *.toc

@@ -1,13 +1,16 @@
+import asyncio
 import time
 import subprocess
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
+from .completion import list_completion_events, mark_event, select_completion_report
 from .config import load_config
 from .config import update_mode
 from .handoff import export_handoff, load_handoff
 from .models import discover_pi_models, list_profiles, resolve_profile
+from .orca_notify import capture_notification_terminal
 from .pi_worker import launch
 from .task_store import ACTIVE, FINAL, assign_worker_slot, claim_worker_slot, create_task, create_repair_task, list_tasks as store_list, read_json, release_worker_slot, repo_id, status, task_dir, write_json
 from .subprocess_utils import hidden_run_kwargs
@@ -32,8 +35,14 @@ def select_worker_timeout(task_scope="NORMAL", requested=None, repair_of=None):
 
 def _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds, task_kind):
     root = Path(project_root).resolve()
-    if not root.is_dir() or not (root / ".git").exists():
-        raise ValueError("project_root 必須是現有 Git repository")
+    if not root.is_dir():
+        raise ValueError(f"PROJECT_ROOT_NOT_FOUND: 目標資料夾不存在：{root}")
+    if not (root / ".git").exists():
+        raise ValueError(
+            "PROJECT_ROOT_NOT_GIT_REPOSITORY: AgentCommander 需要 Git 來建立 baseline、追蹤變更並驗證 allowed_paths。\n"
+            f"請先在目標資料夾執行：git -C \"{root}\" init\n"
+            "完成後重新委派即可；git init 只會建立本機 Git repository，不會上傳檔案，也不需要 GitHub。"
+        )
     if not objective.strip() or not acceptance_criteria or not allowed_paths:
         raise ValueError("缺少 objective、acceptance_criteria 或 allowed_paths")
     for pattern in allowed_paths:
@@ -51,8 +60,7 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
     return root
 
 
-@mcp.tool()
-def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None, task_kind: str = "IMPLEMENT") -> dict:
+def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None, task_kind: str = "IMPLEMENT", completion_report: str | None = None) -> dict:
     """啟動全新 Pi/Qwen Milestone。task_scope: SMALL=1800, NORMAL=3600, LARGE=5400 秒；repair 預設 SMALL。"""
     config = load_config()
     if config["mode"] == "OFF":
@@ -72,7 +80,8 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
     output_limit = max_output_tokens if max_output_tokens is not None else config["worker"].get("max_output_tokens")
     if output_limit is not None and (not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 1):
         raise ValueError("max_output_tokens must be a positive integer or null")
-    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "task_scope": task_scope.upper(), "task_kind": task_kind, "max_output_tokens": output_limit, "optional_context": optional_context[:8000], "required_files": required_files or [], "repair_of": repair_of, "model_profile": selected_profile, "pi_model": pi_model, "preexisting_paths": changed_paths(root), "shared_worktree": True}
+    report = select_completion_report(root, completion_report)
+    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "task_scope": task_scope.upper(), "task_kind": task_kind, "max_output_tokens": output_limit, "optional_context": optional_context[:8000], "required_files": required_files or [], "repair_of": repair_of, "model_profile": selected_profile, "pi_model": pi_model, "preexisting_paths": changed_paths(root), "shared_worktree": True, "completion_report": report, "notification_terminal": capture_notification_terminal(root)}
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
@@ -111,13 +120,63 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         raise
 
 
+_notification_watchers = set()
+
+
+async def _push_completion_notice(task_id, ctx):
+    """Push an MCP notice when possible; durable state remains the fallback."""
+    while True:
+        current = status(task_id)
+        if current["status"] in FINAL:
+            break
+        await asyncio.sleep(1)
+    for _ in range(20):
+        events = [item for item in list_completion_events(include_acknowledged=True) if item["task_id"] == task_id]
+        if events:
+            event = events[0]
+            try:
+                await ctx.session.send_log_message("notice", event, logger="agent-commander")
+                mark_event(task_id, "delivered_at")
+            except Exception:
+                pass
+            return
+        await asyncio.sleep(.25)
+
+
+@mcp.tool(name="delegate_pi")
+async def delegate_pi_mcp(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], ctx: Context, timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None, task_kind: str = "IMPLEMENT", completion_report: str | None = None) -> dict:
+    """Start a fresh Worker and push a durable completion notice when it finishes."""
+    launched = delegate_pi(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds, optional_context, required_files, repair_of, model_profile, task_scope, max_output_tokens, task_kind, completion_report)
+    if launched.get("status") in {"RUNNING", "QUEUED"}:
+        watcher = asyncio.create_task(_push_completion_notice(launched["task_id"], ctx))
+        _notification_watchers.add(watcher)
+        watcher.add_done_callback(_notification_watchers.discard)
+    return launched
+
+
 @mcp.tool()
 def get_agentcommander_status() -> dict:
     """Return compact global mode, worker-profile, Pi, and runtime status."""
     config = load_config(); models = discover_pi_models(config)
     tasks = store_list(); latest = tasks[-1] if tasks else None
     latest_task = {key: latest.get(key) for key in ("task_id", "status", "started_at", "finished_at") if latest.get(key) is not None} if latest else None
-    return {"mode": config["mode"], "default_profile": config["worker"].get("default_profile"), "pi_available": bool(models), "available_profiles": [x["profile"] for x in list_profiles(config, models) if x["available"]], "runtime_status": "READY", "latest_task": latest_task}
+    pending = list_completion_events()
+    return {"mode": config["mode"], "default_profile": config["worker"].get("default_profile"), "pi_available": bool(models), "available_profiles": [x["profile"] for x in list_profiles(config, models) if x["available"]], "runtime_status": "READY", "latest_task": latest_task, "pending_completion_notifications": len(pending), "latest_completion_notification": pending[-1] if pending else None}
+
+
+@mcp.tool()
+def list_completion_notifications(project_root: str | None = None, acknowledge: bool = False) -> list[dict]:
+    """Return durable completion events missed by a disconnected client."""
+    events = list_completion_events(project_root=project_root)
+    if acknowledge:
+        events = [mark_event(item["task_id"], "acknowledged_at") for item in events]
+    return events
+
+
+@mcp.tool()
+def acknowledge_completion_notification(task_id: str) -> dict:
+    """Acknowledge one durable completion event."""
+    return mark_event(task_id, "acknowledged_at")
 
 
 @mcp.tool()

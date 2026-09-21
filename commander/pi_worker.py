@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import DEFAULT, ROOT, load_config
+from .completion import record_completion_event, update_completion_report
 from .entrypoint import worker_command
 from .models import pi_model_args
 from .loop_guard import LoopGuard
+from .orca_notify import send_completion_to_orca
 from .pi_parser import parse_jsonl
 from .process_control import WindowsJob, capture_tree, identity, merge_identities, owned_alive, terminate_task
 from .subprocess_utils import background_creation_flags, hidden_run_kwargs
@@ -345,13 +347,31 @@ def run(task_id, base=None):
     final_stop_reason = "REPAIR_LIMIT_REACHED" if repair_history and verification["status"] != "PASS" and is_mechanical_failure(verification) else stop_reason or (contract_issues[0] if contract_issues else None)
     safe_summary = str(claim.get("summary") or "")[:500] if claim else "Worker did not return a valid structured result."
     result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "stop_reason": final_stop_reason, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": safe_summary, "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "loop_guard": guard.diagnostics() if 'guard' in locals() and guard else None, "repair_history": repair_history, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code, "assistant_stop_reason": parsed.get("final_stop_reason")}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": acceptance_reasons}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited or guard_stopped or final_status == "PARTIAL")}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": len(repair_history) + (1 if spec.get("repair_of") else 0), "loop_guard_warnings": len(guard.warnings) if 'guard' in locals() and guard else 0, "loop_guard_stops": 1 if guard_stopped else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
+    report_path = None
+    report_error = None
+    try:
+        report_path = update_completion_report(spec, result, data.get("started_at"), finished_at)
+    except Exception as exc:
+        report_error = f"{type(exc).__name__}: {exc}"
+        result["warnings"].append(f"COMPLETION_REPORT_WRITE_FAILED: {report_error}")
+        result["status"] = "PARTIAL"
+        result["stop_reason"] = "COMPLETION_REPORT_WRITE_FAILED"
+        result["final_acceptance"]["status"] = "PARTIAL"
+        result["final_acceptance"]["reasons"].append("COMPLETION_REPORT_WRITE_FAILED")
     write_json(folder / "result.json", result)
-    data.update(status=final_status, finished_at=finished_at, exit_code=exit_code)
+    record_completion_event(spec, result, finished_at, report_path, report_error, base)
+    data.update(status=result["status"], finished_at=finished_at, exit_code=exit_code)
     if termination_failed:
         data["finished_at"] = None
     write_json(folder / "status.json", data)
     if final_status in {"COMPLETED", "PARTIAL", "FAILED", "TIMED_OUT", "OUTPUT_LIMIT_REACHED", "LOOP_GUARD_STOPPED"}:
         release_worker_slot(task_id, base)
+    delivery = send_completion_to_orca(spec, result)
+    event_path = Path(base) / "state" / "completion_events" / f"{task_id}.json"
+    if event_path.exists():
+        event = read_json(event_path)
+        event["orca_delivery"] = delivery
+        write_json(event_path, event)
 
 
 if __name__ == "__main__":
