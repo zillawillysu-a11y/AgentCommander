@@ -8,8 +8,10 @@ import pytest
 from commander.config import DEFAULT, load_config
 from commander.pi_parser import parse_jsonl
 from commander.task_store import create_task, create_repair_task, read_json, status, task_dir, write_json
-from commander.verifier import allowed, bounded, changed_paths, verify
+from commander.verifier import allowed, bounded, changed_paths, generated_artifact, verify
+from commander.subprocess_utils import background_creation_flags
 import commander.verifier as verifier_module
+import commander.pi_worker as pi_worker_module
 
 
 def repo(path):
@@ -97,6 +99,53 @@ def test_plain_directory_allowed_path_includes_descendants():
     assert allowed("src/todo.py", ["src"])
     assert allowed("tests/unit/test_todo.py", ["tests/"])
     assert not allowed("src2/todo.py", ["src"])
+
+
+def test_generated_python_artifacts_are_not_attribution_failures(tmp_path):
+    root = repo(tmp_path / "generated-artifacts")
+    source = root / "src" / "todo.py"; source.parent.mkdir(); source.write_text("x = 1\n", encoding="utf-8")
+    cache = root / "src" / "__pycache__" / "todo.cpython-311.pyc"; cache.parent.mkdir(); cache.write_bytes(b"bytecode")
+    data = {**spec(root), "allowed_paths": ["src/todo.py"], "preexisting_paths": [], "shared_worktree": True, "worker_claimed_paths": ["src/todo.py"]}
+    result = verify(data)
+    assert result["status"] == "PASS"
+    assert result["changed_paths"] == ["src/todo.py"]
+    assert result["generated_artifact_paths"] == ["src/__pycache__/todo.cpython-311.pyc"]
+    assert result["attribution_unknown_paths"] == []
+
+
+def test_verification_generated_cache_is_recorded_not_failed(tmp_path):
+    root = repo(tmp_path / "verification-cache")
+    source = root / "src" / "todo.py"; source.parent.mkdir(); source.write_text("x = 1\n", encoding="utf-8")
+    data = {**spec(root), "allowed_paths": ["src/todo.py"], "worker_claimed_paths": ["src/todo.py"], "verification_commands": [[sys.executable, "-m", "compileall", "-q", "src"]]}
+    result = verify(data)
+    assert result["status"] == "PASS"
+    assert result["verification_artifact_paths"]
+    assert result["verification_side_effect_paths"] == []
+
+
+def test_windows_background_flags_include_no_window():
+    flags = background_creation_flags(new_process_group=True, platform="nt")
+    assert flags & subprocess.CREATE_NO_WINDOW
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+def test_runtime_guard_fingerprints_only_for_new_events(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pi_worker_module, "repository_progress_fingerprint", lambda root: calls.append(root) or "progress")
+
+    class Guard:
+        def __init__(self):
+            self.observed = []
+
+        def observe(self, event, progress):
+            self.observed.append((event, progress))
+
+    guard = Guard()
+    assert pi_worker_module.observe_runtime_events(guard, [], "repo") is None
+    assert calls == []
+    assert pi_worker_module.observe_runtime_events(guard, [{"type": "tool_call"}], "repo") is None
+    assert calls == ["repo"]
+    assert guard.observed == [({"type": "tool_call"}, "progress")]
 
 
 def test_changed_paths_git_status_timeout_is_bounded(tmp_path, monkeypatch):

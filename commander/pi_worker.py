@@ -13,6 +13,7 @@ from .models import pi_model_args
 from .loop_guard import LoopGuard
 from .pi_parser import parse_jsonl
 from .process_control import WindowsJob, capture_tree, identity, merge_identities, owned_alive, terminate_task
+from .subprocess_utils import background_creation_flags, hidden_run_kwargs
 from .task_store import read_json, release_worker_slot, state_root, task_dir, write_json
 from .verifier import verify
 
@@ -70,9 +71,24 @@ def consume_runtime_events(path, offset=0, pending=b""):
 
 def repository_progress_fingerprint(root):
     """Cheap content-aware progress signal for tracked and untracked changes."""
-    status = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30).stdout
-    diff = subprocess.run(["git", "diff", "--binary", "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30).stdout
+    status = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, **hidden_run_kwargs()).stdout
+    diff = subprocess.run(["git", "diff", "--binary", "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, **hidden_run_kwargs()).stdout
     return hashlib.sha256(status + b"\0" + diff).hexdigest()
+
+
+def observe_runtime_events(guard, events, project_root):
+    """Feed a new event batch to the guard, fingerprinting only when needed."""
+    if guard is None or not events:
+        return None
+    try:
+        progress = repository_progress_fingerprint(project_root)
+    except Exception:
+        progress = None
+    for event in events:
+        stop_reason = guard.observe(event, progress)
+        if stop_reason:
+            return stop_reason
+    return None
 
 
 def prompt(task_id, spec):
@@ -82,7 +98,7 @@ def prompt(task_id, spec):
 
 
 MECHANICAL_ERRORS = {"VERIFICATION_COMMAND_FAILED", "GIT_DIFF_CHECK_FAILED", "REQUIRED_FILE_MISSING"}
-UNSAFE_REPAIR_ERRORS = {"OUTSIDE_ALLOWED_PATHS", "ATTRIBUTION_UNKNOWN", "BASELINE_NOT_ANCESTOR", "OUTSIDE_PROJECT_SYMLINK", "INVALID_VERIFICATION_COMMAND", "PROJECT_ROOT_INVALID", "DUPLICATE_TOOL_CALL", "REPEATED_FAILURE", "CYCLIC_TOOL_PATTERN", "IDEMPOTENT_NO_PROGRESS", "NO_PROGRESS", "TOOL_BUDGET_REACHED"}
+UNSAFE_REPAIR_ERRORS = {"OUTSIDE_ALLOWED_PATHS", "ATTRIBUTION_UNKNOWN", "BASELINE_NOT_ANCESTOR", "OUTSIDE_PROJECT_SYMLINK", "INVALID_VERIFICATION_COMMAND", "PROJECT_ROOT_INVALID", "VERIFICATION_SIDE_EFFECT", "DUPLICATE_TOOL_CALL", "REPEATED_FAILURE", "CYCLIC_TOOL_PATTERN", "IDEMPOTENT_NO_PROGRESS", "NO_PROGRESS", "TOOL_BUDGET_REACHED"}
 
 
 def is_mechanical_failure(verification):
@@ -107,18 +123,14 @@ def run_local_repair(task_id, spec, folder, executable, model_args, verification
     command = [executable, *model_args, "--mode", "json", "--print", "--no-session", "--", f"@{prompt_path}", "Repair the attached mechanical failure only."]
     with raw.open("wb") as out, err.open("wb") as stderr_stream:
         kwargs = {"cwd": spec["project_root"], "stdin": subprocess.DEVNULL, "stdout": out, "stderr": stderr_stream}
-        if os.name == "nt": kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        if os.name == "nt": kwargs["creationflags"] = background_creation_flags(new_process_group=True)
         else: kwargs["start_new_session"] = True
         proc = subprocess.Popen(command, **kwargs); job = WindowsJob(proc)
         deadline = __import__("time").monotonic() + min(1800, spec.get("timeout_seconds", 1800))
         event_offset = 0; event_pending = b""; repair_guard = LoopGuard(guard_settings, "SMALL"); repair_stop = None
         while proc.poll() is None and __import__("time").monotonic() < deadline:
             events, event_offset, event_pending = consume_runtime_events(raw, event_offset, event_pending)
-            try: progress = repository_progress_fingerprint(spec["project_root"])
-            except Exception: progress = None
-            for event in events:
-                repair_stop = repair_guard.observe(event, progress)
-                if repair_stop: break
+            repair_stop = observe_runtime_events(repair_guard, events, spec["project_root"])
             if repair_stop: break
             __import__("time").sleep(.1)
         if proc.poll() is None:
@@ -138,7 +150,7 @@ def launch(task_id, base=None):
     env["AGENT_COMMANDER_STATE_ROOT"] = str(base)
     kwargs = {"cwd": str(ROOT), "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = background_creation_flags(new_process_group=True, detached=True)
     else:
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(runner, **kwargs)
@@ -177,7 +189,7 @@ def run(task_id, base=None):
         with raw.open("wb") as out, stderr.open("wb") as err:
             kwargs = {"cwd": spec["project_root"], "stdin": subprocess.DEVNULL, "stdout": out, "stderr": err}
             if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                kwargs["creationflags"] = background_creation_flags(new_process_group=True)
             else:
                 kwargs["start_new_session"] = True
             proc = subprocess.Popen(command, **kwargs)
@@ -198,12 +210,7 @@ def run(task_id, base=None):
                     added, usage_offset, usage_pending = consume_output_usage(raw, usage_offset, usage_pending)
                     observed_output += added
                     events, event_offset, event_pending = consume_runtime_events(raw, event_offset, event_pending)
-                    try: progress = repository_progress_fingerprint(spec["project_root"])
-                    except Exception: progress = None
-                    if guard:
-                        for event in events:
-                            stop_reason = guard.observe(event, progress)
-                            if stop_reason: break
+                    stop_reason = observe_runtime_events(guard, events, spec["project_root"])
                     record["descendants"] = merge_identities(record["descendants"], capture_tree(record["pi_root"]))
                     record["observed_output_tokens"] = observed_output
                     record["last_observed_at"] = now()

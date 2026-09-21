@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import psutil
+from .subprocess_utils import hidden_run_kwargs
 
 
 def now():
@@ -128,7 +129,7 @@ def terminate_task(task_id, base=None, confirmation_seconds=15):
     methods = []
     if root and identity_alive(root) and os.name == "nt":
         methods.append("taskkill")
-        subprocess.run(["taskkill", "/PID", str(root["pid"]), "/T", "/F"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        subprocess.run(["taskkill", "/PID", str(root["pid"]), "/T", "/F"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, **hidden_run_kwargs())
     alive = owned_alive(record)
     if alive:
         methods.append("psutil")

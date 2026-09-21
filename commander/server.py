@@ -10,6 +10,7 @@ from .handoff import export_handoff, load_handoff
 from .models import discover_pi_models, list_profiles, resolve_profile
 from .pi_worker import launch
 from .task_store import ACTIVE, FINAL, assign_worker_slot, claim_worker_slot, create_task, create_repair_task, list_tasks as store_list, read_json, release_worker_slot, repo_id, status, task_dir, write_json
+from .subprocess_utils import hidden_run_kwargs
 from .verifier import changed_paths, verify
 
 mcp = FastMCP("agent-commander", log_level="ERROR")
@@ -75,11 +76,11 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
-    baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True, **hidden_run_kwargs())
     if baseline.returncode == 0:
         spec["baseline_head"] = baseline.stdout.strip()
     else:
-        empty_tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=root, input=b"", capture_output=True)
+        empty_tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=root, input=b"", capture_output=True, **hidden_run_kwargs())
         if empty_tree.returncode:
             raise ValueError("無法建立 Git 基線")
         spec["baseline_head"] = empty_tree.stdout.decode("ascii").strip()
@@ -161,7 +162,7 @@ def get_task_diagnostics(task_id: str) -> dict:
     data = read_json(path)
     verification = data.get("verification", {})
     checks = [{key: item.get(key) for key in ("type", "argv", "path", "passed", "exit_code", "stdout_tail", "stderr_tail", "stdout_log", "stderr_log") if key in item} for item in verification.get("checks", [])]
-    return {"task_id": task_id, "status": data.get("status"), "stop_reason": data.get("stop_reason"), "verification_errors": verification.get("errors", []), "checks": checks, "path_validation": verification.get("path_validation"), "worker_claim": data.get("worker_claim_result"), "artifacts": data.get("artifacts"), "loop_guard": data.get("loop_guard"), "repair_history": data.get("repair_history", [])}
+    return {"task_id": task_id, "status": data.get("status"), "stop_reason": data.get("stop_reason"), "verification_errors": verification.get("errors", []), "checks": checks, "path_validation": verification.get("path_validation"), "generated_artifact_paths": verification.get("generated_artifact_paths", []), "verification_artifact_paths": verification.get("verification_artifact_paths", []), "verification_side_effect_paths": verification.get("verification_side_effect_paths", []), "worker_claim": data.get("worker_claim_result"), "artifacts": data.get("artifacts"), "loop_guard": data.get("loop_guard"), "repair_history": data.get("repair_history", [])}
 
 
 @mcp.tool()

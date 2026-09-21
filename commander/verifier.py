@@ -1,6 +1,7 @@
 import fnmatch
 import subprocess
 from pathlib import Path
+from .subprocess_utils import hidden_run_kwargs
 
 
 def bounded(text, lines=150, bytes_limit=16000):
@@ -22,9 +23,9 @@ def command(argv, cwd, timeout=300, log_prefix=None):
             stdout_path = prefix.with_suffix(".stdout.log")
             stderr_path = prefix.with_suffix(".stderr.log")
             with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
-                proc = subprocess.run(argv, cwd=cwd, stdout=out, stderr=err, timeout=timeout, shell=False)
+                proc = subprocess.run(argv, cwd=cwd, stdout=out, stderr=err, timeout=timeout, shell=False, **hidden_run_kwargs())
             return {"exit_code": proc.returncode, "stdout_tail": file_tail(stdout_path), "stderr_tail": file_tail(stderr_path), "stdout_log": str(stdout_path), "stderr_log": str(stderr_path)}
-        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, errors="replace", timeout=timeout, shell=False)
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, errors="replace", timeout=timeout, shell=False, **hidden_run_kwargs())
         return {"exit_code": proc.returncode, "stdout_tail": bounded(proc.stdout), "stderr_tail": bounded(proc.stderr)}
     except (OSError, subprocess.TimeoutExpired) as exc:
         stdout_tail = file_tail(stdout_path) if log_prefix and stdout_path.exists() else ""
@@ -34,7 +35,7 @@ def command(argv, cwd, timeout=300, log_prefix=None):
 
 def changed_paths(root, baseline_head=None, head_exists=True):
     try:
-        result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, **hidden_run_kwargs())
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git status timed out after 30 seconds") from exc
     if result.returncode:
@@ -48,7 +49,7 @@ def changed_paths(root, baseline_head=None, head_exists=True):
         index += 2 if entry[:2] in ("R ", " R", "C ", " C") else 1
     if baseline_head and head_exists:
         try:
-            committed = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", baseline_head, "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            committed = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", baseline_head, "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, **hidden_run_kwargs())
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("git baseline diff timed out after 30 seconds") from exc
         if committed.returncode:
@@ -70,6 +71,13 @@ def allowed(path, patterns):
     return False
 
 
+def generated_artifact(path):
+    """Return true only for well-known disposable Python execution artifacts."""
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    return "__pycache__" in parts or ".pytest_cache" in parts or normalized.endswith((".pyc", ".pyo"))
+
+
 def verify(spec, log_dir=None):
     root = Path(spec["project_root"]).resolve()
     if not root.is_dir() or not (root / ".git").exists():
@@ -81,7 +89,9 @@ def verify(spec, log_dir=None):
         ancestor = command(["git", "merge-base", "--is-ancestor", baseline_head, "HEAD"], root)
         if ancestor["exit_code"] != 0:
             errors.append("BASELINE_NOT_ANCESTOR")
-    paths = changed_paths(root, baseline_head, head_exists)
+    paths_before_checks = changed_paths(root, baseline_head, head_exists)
+    generated_before_checks = [p for p in paths_before_checks if generated_artifact(p)]
+    paths = [p for p in paths_before_checks if not generated_artifact(p)]
     preexisting = {p.replace("\\", "/") for p in spec.get("preexisting_paths", [])}
     outside = [p for p in paths if not allowed(p, spec["allowed_paths"])]
     preexisting_outside = [p for p in outside if p in preexisting]
@@ -120,7 +130,7 @@ def verify(spec, log_dir=None):
         if len(columns) >= 2:
             insertions += int(columns[0]) if columns[0].isdigit() else 0
             deletions += int(columns[1]) if columns[1].isdigit() else 0
-    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root, capture_output=True).stdout.decode("utf-8", "replace")
+    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root, capture_output=True, **hidden_run_kwargs()).stdout.decode("utf-8", "replace")
     # New files do not appear in git diff --numstat until staged.
     for relative in untracked.split("\0"):
         if relative:
@@ -145,4 +155,10 @@ def verify(spec, log_dir=None):
         checks.append({"type": "command", "argv": argv, **outcome})
         if outcome["exit_code"] != 0:
             errors.append("VERIFICATION_COMMAND_FAILED")
-    return {"status": "PASS" if not errors else "FAIL", "errors": sorted(set(errors)), "changed_file_count": len(paths), "changed_paths": paths[:150], "outside_allowed_paths": worker_outside[:150], "preexisting_paths": sorted(preexisting)[:150], "preexisting_outside_paths": preexisting_outside[:150], "attribution_unknown_paths": attribution_unknown[:150], "path_validation": {"status": "PASS" if not worker_outside and not attribution_unknown else "FAIL", "worker_paths": [p for p in paths if p not in preexisting], "commander_or_existing_paths": [p for p in paths if p in preexisting], "outside_allowed_paths": worker_outside[:150], "attribution_unknown_paths": attribution_unknown[:150]}, "insertions": insertions, "deletions": deletions, "diff_check": diff_check, "checks": checks}
+    paths_after_checks = changed_paths(root, baseline_head, head_exists)
+    verification_created = sorted(set(paths_after_checks) - set(paths_before_checks))
+    verification_artifacts = [p for p in verification_created if generated_artifact(p)]
+    verification_side_effects = [p for p in verification_created if not generated_artifact(p)]
+    if verification_side_effects:
+        errors.append("VERIFICATION_SIDE_EFFECT")
+    return {"status": "PASS" if not errors else "FAIL", "errors": sorted(set(errors)), "changed_file_count": len(paths), "changed_paths": paths[:150], "generated_artifact_paths": generated_before_checks[:150], "verification_artifact_paths": verification_artifacts[:150], "verification_side_effect_paths": verification_side_effects[:150], "outside_allowed_paths": worker_outside[:150], "preexisting_paths": sorted(preexisting)[:150], "preexisting_outside_paths": preexisting_outside[:150], "attribution_unknown_paths": attribution_unknown[:150], "path_validation": {"status": "PASS" if not worker_outside and not attribution_unknown else "FAIL", "worker_paths": [p for p in paths if p not in preexisting], "commander_or_existing_paths": [p for p in paths if p in preexisting], "outside_allowed_paths": worker_outside[:150], "attribution_unknown_paths": attribution_unknown[:150]}, "insertions": insertions, "deletions": deletions, "diff_check": diff_check, "checks": checks}

@@ -2,10 +2,11 @@
 import shutil
 import subprocess
 from .config import load_config
+from .subprocess_utils import hidden_run_kwargs
 
 def discover_pi_models(config=None):
     config = config or load_config(); command = shutil.which(config["pi"]["command"]) or config["pi"]["command"]
-    try: result = subprocess.run([command, "--list-models"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    try: result = subprocess.run([command, "--list-models"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, **hidden_run_kwargs())
     except (OSError, subprocess.TimeoutExpired): return []
     models = []
     for line in result.stdout.splitlines():

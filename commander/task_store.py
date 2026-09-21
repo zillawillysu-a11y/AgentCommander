@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ROOT, load_config
+from .subprocess_utils import hidden_run_kwargs
 
 LEGACY_TASKS = ROOT / "state" / "tasks"
 FINAL = {"COMPLETED", "PARTIAL", "FAILED", "TIMED_OUT", "INTERRUPTED", "OUTPUT_LIMIT_REACHED", "LOOP_GUARD_STOPPED", "COMPLEXITY_BUDGET_REACHED"}
@@ -188,7 +189,7 @@ def pid_alive(pid):
     except ImportError:
         if os.name == "nt":
             import subprocess
-            result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True)
+            result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, **hidden_run_kwargs())
             return f'"{pid}"' in result.stdout
         try:
             os.kill(pid, 0)

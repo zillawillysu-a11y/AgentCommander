@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from commander import config, entrypoint, integration, models, server
+from commander.benchmark import prepare
 
 
 @pytest.fixture
@@ -137,3 +138,14 @@ def test_command_generation_windows_spaces(monkeypatch):
 def test_mcp_discovery_includes_v02_tools():
     tools = {tool.name for tool in __import__("asyncio").run(server.mcp.list_tools())}
     assert {"get_agentcommander_status", "list_worker_models", "set_mode", "delegate_pi"} <= tools
+
+
+def test_benchmark_prompt_pins_each_canonical_project_root(tmp_path):
+    root = prepare(tmp_path / "benchmarks")
+    for label in ("direct", "agentcommander"):
+        project = root / label
+        prompt = (project / "BENCHMARK_PROMPT.md").read_text(encoding="utf-8")
+        result = json.loads((project / "BENCHMARK_RESULT.json").read_text(encoding="utf-8"))
+        assert str(project.resolve()) in prompt
+        assert result["expected_project_root"] == str(project.resolve())
+        assert result["actual_project_root"] is None
