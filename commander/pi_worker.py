@@ -99,11 +99,44 @@ def prompt(task_id, spec):
 
 MECHANICAL_ERRORS = {"VERIFICATION_COMMAND_FAILED", "GIT_DIFF_CHECK_FAILED", "REQUIRED_FILE_MISSING"}
 UNSAFE_REPAIR_ERRORS = {"OUTSIDE_ALLOWED_PATHS", "ATTRIBUTION_UNKNOWN", "BASELINE_NOT_ANCESTOR", "OUTSIDE_PROJECT_SYMLINK", "INVALID_VERIFICATION_COMMAND", "PROJECT_ROOT_INVALID", "VERIFICATION_SIDE_EFFECT", "DUPLICATE_TOOL_CALL", "REPEATED_FAILURE", "CYCLIC_TOOL_PATTERN", "IDEMPOTENT_NO_PROGRESS", "NO_PROGRESS", "TOOL_BUDGET_REACHED"}
+MUTATING_TASK_KINDS = {"IMPLEMENT", "REFACTOR", "TEST"}
 
 
 def is_mechanical_failure(verification):
     errors = set(verification.get("errors", []))
     return bool(errors & MECHANICAL_ERRORS) and not bool(errors & UNSAFE_REPAIR_ERRORS)
+
+
+def acceptance_issues(spec, parsed, verification):
+    """Return non-verification reasons that prevent final task acceptance."""
+    issues = []
+    claim = parsed.get("claim") if isinstance(parsed.get("claim"), dict) else None
+    if parsed.get("final_stop_reason") == "length":
+        issues.append("WORKER_OUTPUT_TRUNCATED")
+    if not claim:
+        issues.append("WORKER_CLAIM_MISSING")
+    elif str(claim.get("status", "")).upper() != "PASS":
+        issues.append("WORKER_CLAIM_NOT_PASS")
+    if str(spec.get("task_kind", "IMPLEMENT")).upper() in MUTATING_TASK_KINDS:
+        path_validation = verification.get("path_validation", {}) if isinstance(verification, dict) else {}
+        worker_paths = path_validation.get("worker_paths", [])
+        if not worker_paths:
+            issues.append("NO_IMPLEMENTATION_CHANGE")
+    return issues
+
+
+def final_acceptance_status(*, termination_failed, timed_out, guard_stopped, output_limited, exit_code, verification_passed, prompt_delivered, contract_issues):
+    if termination_failed:
+        return "TERMINATION_FAILED"
+    if timed_out:
+        return "TIMED_OUT"
+    if guard_stopped:
+        return "LOOP_GUARD_STOPPED"
+    if output_limited and verification_passed and prompt_delivered:
+        return "OUTPUT_LIMIT_REACHED"
+    if exit_code == 0 and verification_passed and prompt_delivered:
+        return "PARTIAL" if contract_issues else "COMPLETED"
+    return "FAILED"
 
 
 def repair_prompt(task_id, spec, verification, changed_files, attempt):
@@ -271,7 +304,7 @@ def run(task_id, base=None):
     finally:
         if job is not None:
             job.close()
-    parsed = parse_jsonl(raw, task_id, spec["objective"]) if raw.exists() else {"claim": None, "final_message": None, "usage": {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable"}, "malformed_lines": 0, "prompt_delivered": False}
+    parsed = parse_jsonl(raw, task_id, spec["objective"]) if raw.exists() else {"claim": None, "final_message": None, "final_stop_reason": None, "usage": {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable"}, "malformed_lines": 0, "prompt_delivered": False}
     claim = parsed["claim"] if isinstance(parsed["claim"], dict) else {}
     worker_files = [str(p).replace("\\", "/")[:200] for p in claim.get("files_changed", [])[:30]] if isinstance(claim.get("files_changed"), list) else []
     if claim:
@@ -299,7 +332,8 @@ def run(task_id, base=None):
     output_limit = spec.get("max_output_tokens")
     output_value = parsed.get("usage", {}).get("output_tokens")
     output_limited = budget_reached or (isinstance(output_limit, int) and isinstance(output_value, int) and output_value >= output_limit)
-    final_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "LOOP_GUARD_STOPPED" if guard_stopped else "OUTPUT_LIMIT_REACHED" if output_limited and verification["status"] == "PASS" and parsed["prompt_delivered"] else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
+    contract_issues = acceptance_issues(spec, parsed, verification)
+    final_status = final_acceptance_status(termination_failed=termination_failed, timed_out=timed_out, guard_stopped=guard_stopped, output_limited=output_limited, exit_code=exit_code, verification_passed=verification["status"] == "PASS", prompt_delivered=parsed["prompt_delivered"], contract_issues=contract_issues)
     warnings = ([failure] if failure else []) + ([] if parsed["prompt_delivered"] or exit_code is None else ["WORKER_PROMPT_NOT_DELIVERED"])
     finished_at = now()
     test_checks = verification.get("checks", []) if isinstance(verification, dict) else []
@@ -307,14 +341,16 @@ def run(task_id, base=None):
     worker_process_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "GUARD_STOPPED" if guard_stopped else "BUDGET_STOPPED" if budget_reached else "EXITED" if exit_code is not None else "LAUNCH_FAILED"
     if output_limited:
         warnings.append(f"OUTPUT_LIMIT_REACHED:{output_limit}")
-    acceptance_reasons = list(verification.get("errors", [])) + (["OUTPUT_LIMIT_REACHED"] if output_limited else [])
-    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "stop_reason": "REPAIR_LIMIT_REACHED" if repair_history and verification["status"] != "PASS" and is_mechanical_failure(verification) else stop_reason, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "loop_guard": guard.diagnostics() if 'guard' in locals() and guard else None, "repair_history": repair_history, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": acceptance_reasons}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited or guard_stopped)}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": len(repair_history) + (1 if spec.get("repair_of") else 0), "loop_guard_warnings": len(guard.warnings) if 'guard' in locals() and guard else 0, "loop_guard_stops": 1 if guard_stopped else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
+    acceptance_reasons = list(verification.get("errors", [])) + (["OUTPUT_LIMIT_REACHED"] if output_limited else []) + contract_issues
+    final_stop_reason = "REPAIR_LIMIT_REACHED" if repair_history and verification["status"] != "PASS" and is_mechanical_failure(verification) else stop_reason or (contract_issues[0] if contract_issues else None)
+    safe_summary = str(claim.get("summary") or "")[:500] if claim else "Worker did not return a valid structured result."
+    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "stop_reason": final_stop_reason, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": safe_summary, "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "loop_guard": guard.diagnostics() if 'guard' in locals() and guard else None, "repair_history": repair_history, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code, "assistant_stop_reason": parsed.get("final_stop_reason")}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": acceptance_reasons}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited or guard_stopped or final_status == "PARTIAL")}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": len(repair_history) + (1 if spec.get("repair_of") else 0), "loop_guard_warnings": len(guard.warnings) if 'guard' in locals() and guard else 0, "loop_guard_stops": 1 if guard_stopped else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
     write_json(folder / "result.json", result)
     data.update(status=final_status, finished_at=finished_at, exit_code=exit_code)
     if termination_failed:
         data["finished_at"] = None
     write_json(folder / "status.json", data)
-    if final_status in {"COMPLETED", "FAILED", "TIMED_OUT", "OUTPUT_LIMIT_REACHED", "LOOP_GUARD_STOPPED"}:
+    if final_status in {"COMPLETED", "PARTIAL", "FAILED", "TIMED_OUT", "OUTPUT_LIMIT_REACHED", "LOOP_GUARD_STOPPED"}:
         release_worker_slot(task_id, base)
 
 

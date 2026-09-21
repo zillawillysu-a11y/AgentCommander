@@ -70,6 +70,14 @@ def test_parser_malformed_and_claim(tmp_path):
     assert bounded("\n".join(map(str, range(200))), 2) == "198\n199"
 
 
+def test_parser_reports_assistant_output_truncation(tmp_path):
+    file = tmp_path / "events.jsonl"
+    file.write_text(json.dumps({"type": "message_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "unfinished code"}]}}) + "\n", encoding="utf-8")
+    parsed = parse_jsonl(file)
+    assert parsed["final_stop_reason"] == "length"
+    assert parsed["claim"] is None
+
+
 def test_parser_detects_truncated_worker_prompt(tmp_path):
     file = tmp_path / "events.jsonl"
     user = {"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": "Only the first line"}]}}

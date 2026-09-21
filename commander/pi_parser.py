@@ -4,6 +4,7 @@ import re
 
 def parse_jsonl(path, expected_task_id=None, expected_objective=None):
     final = None
+    final_stop_reason = None
     prompt_delivered = False if expected_task_id else None
     usage = {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable", "cache_read_tokens": "unavailable", "cache_write_tokens": "unavailable"}
     malformed = 0
@@ -28,6 +29,8 @@ def parse_jsonl(path, expected_task_id=None, expected_objective=None):
                     parts = [x.get("text", "") for x in content if isinstance(x, dict) and x.get("type") == "text"] if isinstance(content, list) else [str(content)]
                     if parts:
                         final = "\n".join(parts)
+                    if event.get("type") == "message_end" and message.get("stopReason"):
+                        final_stop_reason = str(message["stopReason"])
                 if message.get("model"):
                     usage["model"] = message["model"]
                 u = message.get("usage", {})
@@ -45,4 +48,4 @@ def parse_jsonl(path, expected_task_id=None, expected_objective=None):
                 claim = json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-    return {"claim": claim, "final_message": final[-4000:] if final else None, "usage": usage, "malformed_lines": malformed, "prompt_delivered": prompt_delivered}
+    return {"claim": claim, "final_message": final[-4000:] if final else None, "final_stop_reason": final_stop_reason, "usage": usage, "malformed_lines": malformed, "prompt_delivered": prompt_delivered}
