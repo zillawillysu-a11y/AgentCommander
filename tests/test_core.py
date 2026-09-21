@@ -92,6 +92,40 @@ def test_git_and_allowed_paths(tmp_path):
     assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
 
 
+def test_preexisting_commander_change_is_not_worker_outside_path(tmp_path):
+    root = repo(tmp_path / "commander-dirty")
+    (root / "src").mkdir()
+    (root / "src" / "worker.py").write_text("worker\n")
+    (root / "README.md").write_text("Commander edit\n")
+    result = verify({**spec(root), "allowed_paths": ["src/**"], "preexisting_paths": ["README.md"]})
+    assert result["status"] == "PASS"
+    assert result["preexisting_outside_paths"] == ["README.md"]
+    assert result["path_validation"]["commander_or_existing_paths"] == ["README.md"]
+
+
+def test_worker_change_to_forbidden_path_is_rejected(tmp_path):
+    root = repo(tmp_path / "worker-outside")
+    (root / "src").mkdir()
+    (root / "src" / "worker.py").write_text("worker\n")
+    (root / "README.md").write_text("Worker edit\n")
+    result = verify({**spec(root), "allowed_paths": ["src/**"], "preexisting_paths": [], "worker_claimed_paths": ["README.md"]})
+    assert result["status"] == "FAIL"
+    assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
+    assert result["path_validation"]["outside_allowed_paths"] == ["README.md"]
+
+
+def test_concurrent_forbidden_path_is_reported_unknown_not_worker_violation(tmp_path):
+    root = repo(tmp_path / "concurrent-unknown")
+    (root / "src").mkdir()
+    (root / "src" / "worker.py").write_text("worker\n")
+    (root / "README.md").write_text("Commander concurrent edit\n")
+    result = verify({**spec(root), "allowed_paths": ["src/**"], "preexisting_paths": [], "shared_worktree": True})
+    assert result["status"] == "FAIL"
+    assert "ATTRIBUTION_UNKNOWN" in result["errors"]
+    assert "OUTSIDE_ALLOWED_PATHS" not in result["errors"]
+    assert result["path_validation"]["attribution_unknown_paths"] == ["README.md"]
+
+
 def test_committed_worker_changes_still_checked(tmp_path):
     root = repo(tmp_path / "committed")
     baseline = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()

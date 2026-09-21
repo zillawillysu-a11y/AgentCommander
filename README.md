@@ -24,6 +24,8 @@ Worker lifetime 依工作範圍選擇：小型或 repair 為 1800 秒、一般 s
 
 Windows worker 由 AgentCommander 以 owned process tree 管理。Timeout 會先進入 `TERMINATING`，以 Job Object／PID tree 終止並確認所有已記錄 descendants 消失後才成為 `TIMED_OUT`；若無法確認則為 `TERMINATION_FAILED` 或 `ORPHAN_WORKER`，全域 single-worker slot 會保持鎖定，禁止下一個 delegation。
 
+每個 task result 會分開記錄 Worker process、Worker claim、測試、path validation、final acceptance、Worker token/runtime 與成本觀測。Qwen 的 input/output/cache-read token 只能作為本機 Worker 資源指標；Codex 規劃、等待、MCP tool calls、review、repair 用量只有平台提供時才填入，否則明確標示不可取得，不會估算 Codex 額度或金額。要比較 Codex 直接完成與 Codex＋Qwen，必須使用範圍和品質相近的多筆 task result；單次 Worker token 或測試通過不足以宣稱節省。
+
 設定檔位於 `%LOCALAPPDATA%\AgentCommander\config.json`。模型 profile 只引用 Pi 已配置的 model identifier；AgentCommander 不下載模型、不修改 Pi provider 設定，也不會在 profile 遺失時偷偷 fallback。
 
 ## DEVELOPER

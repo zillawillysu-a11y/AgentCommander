@@ -74,9 +74,28 @@ def verify(spec, log_dir=None):
         if ancestor["exit_code"] != 0:
             errors.append("BASELINE_NOT_ANCESTOR")
     paths = changed_paths(root, baseline_head, head_exists)
+    preexisting = {p.replace("\\", "/") for p in spec.get("preexisting_paths", [])}
     outside = [p for p in paths if not allowed(p, spec["allowed_paths"])]
-    if outside:
+    preexisting_outside = [p for p in outside if p in preexisting]
+    claimed = {p.replace("\\", "/") for p in spec.get("worker_claimed_paths", [])}
+    attributable_outside = [p for p in outside if p not in preexisting]
+    # In a shared worktree, a post-start forbidden path can only be attributed
+    # to the Worker when it is present in the Worker's explicit file claim.
+    # Otherwise report attribution as unknown instead of falsely blaming the
+    # Worker for a concurrent Commander edit. Unknown attribution remains a
+    # failed acceptance until the Commander reviews or isolates the change.
+    if spec.get("shared_worktree"):
+        worker_outside = [p for p in attributable_outside if p in claimed]
+        attribution_unknown = [p for p in attributable_outside if p not in claimed]
+    else:
+        # Legacy/direct verifier callers have no concurrent Commander context;
+        # preserve the original strict attribution behavior.
+        worker_outside = attributable_outside
+        attribution_unknown = []
+    if worker_outside:
         errors.append("OUTSIDE_ALLOWED_PATHS")
+    if attribution_unknown:
+        errors.append("ATTRIBUTION_UNKNOWN")
     for relative in paths:
         target = (root / relative).resolve()
         if not target.is_relative_to(root):
@@ -118,4 +137,4 @@ def verify(spec, log_dir=None):
         checks.append({"type": "command", "argv": argv, **outcome})
         if outcome["exit_code"] != 0:
             errors.append("VERIFICATION_COMMAND_FAILED")
-    return {"status": "PASS" if not errors else "FAIL", "errors": sorted(set(errors)), "changed_file_count": len(paths), "changed_paths": paths[:150], "outside_allowed_paths": outside[:150], "insertions": insertions, "deletions": deletions, "diff_check": diff_check, "checks": checks}
+    return {"status": "PASS" if not errors else "FAIL", "errors": sorted(set(errors)), "changed_file_count": len(paths), "changed_paths": paths[:150], "outside_allowed_paths": worker_outside[:150], "preexisting_paths": sorted(preexisting)[:150], "preexisting_outside_paths": preexisting_outside[:150], "attribution_unknown_paths": attribution_unknown[:150], "path_validation": {"status": "PASS" if not worker_outside and not attribution_unknown else "FAIL", "worker_paths": [p for p in paths if p not in preexisting], "commander_or_existing_paths": [p for p in paths if p in preexisting], "outside_allowed_paths": worker_outside[:150], "attribution_unknown_paths": attribution_unknown[:150]}, "insertions": insertions, "deletions": deletions, "diff_check": diff_check, "checks": checks}

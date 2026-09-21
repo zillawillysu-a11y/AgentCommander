@@ -19,6 +19,13 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def elapsed_seconds(started_at, finished_at):
+    try:
+        return max(0.0, (datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds())
+    except (TypeError, ValueError):
+        return "unavailable"
+
+
 def prompt(task_id, spec):
     template = (ROOT / "prompts" / "pi_worker_en.md").read_text(encoding="utf-8")
     values = {"task_id": task_id, **spec}
@@ -116,22 +123,33 @@ def run(task_id, base=None):
             job.close()
     parsed = parse_jsonl(raw, task_id, spec["objective"]) if raw.exists() else {"claim": None, "final_message": None, "usage": {"model": "unavailable", "input_tokens": "unavailable", "output_tokens": "unavailable"}, "malformed_lines": 0, "prompt_delivered": False}
     claim = parsed["claim"] if isinstance(parsed["claim"], dict) else {}
+    worker_files = [str(p).replace("\\", "/")[:200] for p in claim.get("files_changed", [])[:30]] if isinstance(claim.get("files_changed"), list) else []
     if claim:
         write_json(folder / "worker_claim.json", claim)
     try:
-        verification = {"status": "FAIL", "errors": ["TERMINATION_UNCONFIRMED"]} if termination_failed else verify(spec, folder / "verification_logs")
+        verification_spec = {**spec, "worker_claimed_paths": worker_files}
+        verification = {"status": "FAIL", "errors": ["TERMINATION_UNCONFIRMED"]} if termination_failed else verify(verification_spec, folder / "verification_logs")
     except Exception as exc:
         verification = {"status": "FAIL", "errors": [f"VERIFIER_ERROR: {exc}"]}
     write_json(folder / "verification.json", verification)
-    final_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
+    output_limit = spec.get("max_output_tokens")
+    output_value = parsed.get("usage", {}).get("output_tokens")
+    output_limited = isinstance(output_limit, int) and isinstance(output_value, int) and output_value >= output_limit
+    final_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "COMPLETED" if exit_code == 0 and verification["status"] == "PASS" and parsed["prompt_delivered"] else "OUTPUT_LIMIT_REACHED" if output_limited and verification["status"] == "PASS" and parsed["prompt_delivered"] else "FAILED"
     warnings = ([failure] if failure else []) + ([] if parsed["prompt_delivered"] or exit_code is None else ["WORKER_PROMPT_NOT_DELIVERED"])
-    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "EXITED" if exit_code is not None else "LAUNCH_FAILED", "status": final_status, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": [str(p)[:200] for p in claim.get("files_changed", [])[:30]] if isinstance(claim.get("files_changed"), list) else [], "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
+    finished_at = now()
+    test_checks = verification.get("checks", []) if isinstance(verification, dict) else []
+    tests_status = "PASS" if test_checks and all(item.get("exit_code") == 0 for item in test_checks if item.get("type") == "command") else "FAIL" if any(item.get("type") == "command" and item.get("exit_code") != 0 for item in test_checks) else "UNAVAILABLE"
+    worker_process_status = "TERMINATION_FAILED" if termination_failed else "TIMED_OUT" if timed_out else "EXITED" if exit_code is not None else "LAUNCH_FAILED"
+    if output_limited:
+        warnings.append(f"OUTPUT_LIMIT_REACHED:{output_limit}")
+    result = {"task_id": task_id, "milestone": spec["objective"][:500], "worker_status": worker_process_status, "status": final_status, "exit_code": exit_code, "prompt_delivered": parsed["prompt_delivered"], "worker_claim_status": str(claim.get("status", "unavailable"))[:30], "worker_summary": str(claim.get("summary") or parsed["final_message"] or "")[:500], "worker_files_changed": worker_files, "usage": parsed["usage"], "malformed_jsonl_lines": parsed["malformed_lines"], "verification": verification, "worker_process_result": {"status": worker_process_status, "exit_code": exit_code}, "worker_claim_result": {"status": str(claim.get("status", "unavailable")), "summary": str(claim.get("summary") or "")[:500]}, "test_result": {"status": tests_status, "checks": test_checks}, "path_validation": verification.get("path_validation", {"status": "UNAVAILABLE"}), "final_acceptance": {"status": final_status, "reasons": verification.get("errors", [])}, "budget": {"max_output_tokens": output_limit, "output_tokens": output_value, "status": "REACHED" if output_limited else "NOT_REACHED" if output_limit else "UNCONFIGURED", "partial_result_preserved": bool(output_limited)}, "cost_metrics": {"task_scope": spec.get("task_scope", "UNKNOWN"), "repair_count": 1 if spec.get("repair_of") else 0, "worker": {"usage": parsed["usage"], "elapsed_seconds": elapsed_seconds(data.get("started_at"), finished_at)}, "codex_commander": {"status": "UNAVAILABLE", "planning": "unavailable", "waiting": "unavailable", "tool_calls": "unavailable", "review": "unavailable", "repairs": "unavailable"}, "comparison": "unavailable_without_comparable_codex_baseline"}, "warnings": warnings, "artifacts": {"raw_jsonl": str(raw), "stderr": str(stderr), "verification": str(folder / "verification.json"), "worker_claim": str(folder / "worker_claim.json") if claim else None}}
     write_json(folder / "result.json", result)
-    data.update(status=final_status, finished_at=now(), exit_code=exit_code)
+    data.update(status=final_status, finished_at=finished_at, exit_code=exit_code)
     if termination_failed:
         data["finished_at"] = None
     write_json(folder / "status.json", data)
-    if final_status in {"COMPLETED", "FAILED", "TIMED_OUT"}:
+    if final_status in {"COMPLETED", "FAILED", "TIMED_OUT", "OUTPUT_LIMIT_REACHED"}:
         release_worker_slot(task_id, base)
 
 

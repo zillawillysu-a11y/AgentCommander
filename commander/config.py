@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODES = {"OFF", "AUTO", "FORCE"}
-DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
+DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None, "max_output_tokens": None}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
 
 def local_data_root():
     value = os.environ.get("LOCALAPPDATA")
@@ -32,6 +32,8 @@ def validate_config(config):
         if not name or not isinstance(profile, dict) or not isinstance(profile.get("pi_model"), str) or not profile["pi_model"]: raise ValueError(f"Invalid model profile: {name}")
     default = config["worker"].get("default_profile")
     if default is not None and not isinstance(default, str): raise ValueError("default_profile must be a string or null")
+    output_limit = config["worker"].get("max_output_tokens")
+    if output_limit is not None and (not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 1): raise ValueError("max_output_tokens must be a positive integer or null")
     return config
 
 def load_config(root=None):

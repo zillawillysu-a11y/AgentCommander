@@ -31,6 +31,19 @@ def test_invalid_mode(machine_config):
         config.update_mode("sometimes")
 
 
+def test_output_budget_is_persisted_on_delegation(tmp_path, monkeypatch, machine_config):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "init"], check=True)
+    monkeypatch.setattr(server, "resolve_profile", lambda *args: ("qwen-main", "test/model"))
+    monkeypatch.setattr(server, "launch", lambda task_id: {"task_id": task_id, "status": "QUEUED"})
+    result = server.delegate_pi(str(root), "small", ["done"], ["src/**"], [[sys.executable, "-c", "pass"]], task_scope="SMALL", max_output_tokens=123)
+    spec = json.loads((Path(config.local_data_root()) / "state" / "repos" / result["repo_id"] / "tasks" / result["task_id"] / "task.json").read_text(encoding="utf-8"))
+    assert spec["timeout_seconds"] == 1800
+    assert spec["max_output_tokens"] == 123
+
+
 def test_worker_timeout_selection():
     assert server.select_worker_timeout("SMALL") == 1800
     assert server.select_worker_timeout("NORMAL") == 3600

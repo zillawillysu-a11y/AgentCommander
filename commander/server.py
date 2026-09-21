@@ -10,7 +10,7 @@ from .handoff import export_handoff, load_handoff
 from .models import discover_pi_models, list_profiles, resolve_profile
 from .pi_worker import launch
 from .task_store import ACTIVE, FINAL, assign_worker_slot, claim_worker_slot, create_task, create_repair_task, list_tasks as store_list, read_json, release_worker_slot, repo_id, status, task_dir, write_json
-from .verifier import verify
+from .verifier import changed_paths, verify
 
 mcp = FastMCP("agent-commander", log_level="ERROR")
 WORKER_TIMEOUTS = {"SMALL": 1800, "NORMAL": 3600, "LARGE": 5400}
@@ -48,7 +48,7 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
 
 
 @mcp.tool()
-def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL") -> dict:
+def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None) -> dict:
     """啟動全新 Pi/Qwen Milestone。task_scope: SMALL=1800, NORMAL=3600, LARGE=5400 秒；repair 預設 SMALL。"""
     config = load_config()
     if config["mode"] == "OFF":
@@ -64,7 +64,10 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
         original = read_json(task_dir(repair_of) / "task.json")
         if Path(original["project_root"]).resolve() != root:
             raise ValueError("repair project_root 必須與原任務一致")
-    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "optional_context": optional_context[:8000], "required_files": required_files or [], "model_profile": selected_profile, "pi_model": pi_model}
+    output_limit = max_output_tokens if max_output_tokens is not None else config["worker"].get("max_output_tokens")
+    if output_limit is not None and (not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 1):
+        raise ValueError("max_output_tokens must be a positive integer or null")
+    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "task_scope": task_scope.upper(), "max_output_tokens": output_limit, "optional_context": optional_context[:8000], "required_files": required_files or [], "repair_of": repair_of, "model_profile": selected_profile, "pi_model": pi_model, "preexisting_paths": changed_paths(root), "shared_worktree": True}
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
@@ -134,7 +137,7 @@ def get_task_result(task_id: str) -> dict:
     if not path.exists():
         return {"task_id": task_id, "status": status(task_id)["status"], "result": "尚未產生"}
     data = read_json(path)
-    keys = ("task_id", "milestone", "worker_status", "status", "exit_code", "prompt_delivered", "worker_claim_status", "worker_summary", "worker_files_changed", "usage", "malformed_jsonl_lines", "verification", "warnings", "artifacts")
+    keys = ("task_id", "milestone", "worker_status", "status", "exit_code", "prompt_delivered", "worker_claim_status", "worker_summary", "worker_files_changed", "usage", "malformed_jsonl_lines", "verification", "worker_process_result", "worker_claim_result", "test_result", "path_validation", "final_acceptance", "budget", "cost_metrics", "warnings", "artifacts")
     return {key: data[key] for key in keys if key in data}
 
 
