@@ -3,6 +3,7 @@ import os
 import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
+from . import __version__
 from .config import load_config, local_data_root, save_config
 from .doctor import run_doctor
 from .entrypoint import helper_path
@@ -12,10 +13,10 @@ from .task_store import list_tasks
 
 class App(tk.Tk):
     def __init__(self):
-        super().__init__(); self.title("AgentCommander 0.2.0"); self.geometry("580x430"); self.resizable(False, False)
+        super().__init__(); self.title(f"AgentCommander {__version__}"); self.geometry("580x430"); self.resizable(False, False)
         self.mode = tk.StringVar(); self.default = tk.StringVar(); self.status = tk.StringVar(); self._build(); self.refresh()
     def _build(self):
-        frame = ttk.Frame(self, padding=18); frame.pack(fill="both", expand=True); ttk.Label(frame, text="AgentCommander 0.2.0", font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        frame = ttk.Frame(self, padding=18); frame.pack(fill="both", expand=True); ttk.Label(frame, text=f"AgentCommander {__version__}", font=("Segoe UI", 16, "bold")).pack(anchor="w")
         row = ttk.Frame(frame); row.pack(fill="x", pady=12); ttk.Label(row, text="Mode:").pack(side="left")
         for mode in ("OFF", "AUTO", "FORCE"): ttk.Radiobutton(row, text=mode, value=mode, variable=self.mode, command=self.save_mode).pack(side="left", padx=8)
         ttk.Label(frame, textvariable=self.default).pack(anchor="w"); ttk.Label(frame, textvariable=self.status, justify="left").pack(anchor="w", pady=12)

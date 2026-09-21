@@ -1,4 +1,4 @@
-mcp>=1.0,<3
+mcp>=1.0,<2
 pytest>=8,<10
 pyinstaller>=6,<7
 psutil>=5.9,<8

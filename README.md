@@ -1,4 +1,4 @@
-# AgentCommander 0.2.0
+# AgentCommander 0.2.1
 
 AgentCommander 讓 Codex 擔任規劃、審查與最終決策者，並透過 MCP 將適合的 repository 工作交給本機 Pi / Qwen Worker。所有任務都受 Git baseline、允許路徑、明確驗收條件及確定性驗證約束；runtime state 預設保存在 `%LOCALAPPDATA%\AgentCommander`，不寫入目標 repository。
 
