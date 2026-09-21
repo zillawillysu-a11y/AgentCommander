@@ -6,16 +6,21 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROMPT = """Implement the todo persistence milestone in this repository.
+PROMPT = """Implement the task tracker persistence milestone in this repository.
 
 Requirements:
-- Implement src/todo.py with a TodoStore backed by a JSON file.
-- Support add(title), list_items(), and complete(item_id), with stable integer IDs.
-- Add src/todo_cli.py with add, list, and complete commands.
-- Add deterministic tests for persistence, completion, and CLI behavior.
-- Keep it dependency-free, update README.md with usage, and run the full test suite.
+- Implement src/todo.py with a dependency-free JSON-backed TodoStore.
+- Support add, list/filter, complete, reopen, delete, and summary operations.
+- Preserve stable integer IDs across deletes and process/store reloads.
+- Validate malformed JSON and invalid records with clear domain errors.
+- Use atomic writes so a failed replacement cannot corrupt the existing store.
+- Implement src/todo_cli.py with add, list, complete, reopen, delete, and summary commands.
+- Add JSON export and import in src/todo_exchange.py; imports must validate all records before changing the store.
+- Provide useful exit codes and deterministic text/JSON output.
+- Add comprehensive deterministic tests for storage, validation, CLI, import/export, and failure behavior.
+- Keep it dependency-free, update README.md with examples, and run the full test suite.
 """
-SOURCE = {"src/__init__.py": "", "src/todo.py": "# TODO: implement TodoStore\n", "src/todo_cli.py": "# TODO: implement CLI\n", "tests/test_todo.py": "def test_placeholder():\n    assert True\n", "README.md": "# Todo benchmark\n\nThis repository is intentionally incomplete.\n"}
+SOURCE = {"src/__init__.py": "", "src/todo.py": "# TODO: implement TodoStore\n", "src/todo_cli.py": "# TODO: implement CLI\n", "src/todo_exchange.py": "# TODO: implement validated import/export\n", "tests/test_todo.py": "def test_placeholder():\n    assert True\n", "README.md": "# Task tracker benchmark\n\nThis repository is intentionally incomplete.\n"}
 
 
 def _git(cwd: Path, *args: str) -> None:

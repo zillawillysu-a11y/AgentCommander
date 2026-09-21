@@ -33,7 +33,10 @@ def command(argv, cwd, timeout=300, log_prefix=None):
 
 
 def changed_paths(root, baseline_head=None, head_exists=True):
-    result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, capture_output=True)
+    try:
+        result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git status timed out after 30 seconds") from exc
     if result.returncode:
         raise RuntimeError("git status failed")
     entries = result.stdout.decode("utf-8", "replace").split("\0")
@@ -44,7 +47,10 @@ def changed_paths(root, baseline_head=None, head_exists=True):
         paths.append(entry[3:].replace("\\", "/"))
         index += 2 if entry[:2] in ("R ", " R", "C ", " C") else 1
     if baseline_head and head_exists:
-        committed = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", baseline_head, "HEAD"], cwd=root, capture_output=True)
+        try:
+            committed = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", baseline_head, "HEAD"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("git baseline diff timed out after 30 seconds") from exc
         if committed.returncode:
             raise RuntimeError("git baseline diff failed")
         paths.extend(p.replace("\\", "/") for p in committed.stdout.decode("utf-8", "replace").split("\0") if p)

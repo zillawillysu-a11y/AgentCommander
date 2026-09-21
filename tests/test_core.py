@@ -9,6 +9,7 @@ from commander.config import DEFAULT, load_config
 from commander.pi_parser import parse_jsonl
 from commander.task_store import create_task, create_repair_task, read_json, status, task_dir, write_json
 from commander.verifier import allowed, bounded, changed_paths, verify
+import commander.verifier as verifier_module
 
 
 def repo(path):
@@ -90,6 +91,15 @@ def test_git_and_allowed_paths(tmp_path):
     (root / "README.md").write_text("oops\n")
     result = verify(spec(root))
     assert "OUTSIDE_ALLOWED_PATHS" in result["errors"]
+
+
+def test_changed_paths_git_status_timeout_is_bounded(tmp_path, monkeypatch):
+    root = repo(tmp_path / "git-timeout")
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+    monkeypatch.setattr(verifier_module.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="git status timed out after 30 seconds"):
+        changed_paths(root)
 
 
 def test_preexisting_commander_change_is_not_worker_outside_path(tmp_path):
