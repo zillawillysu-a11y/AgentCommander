@@ -28,6 +28,10 @@ Windows worker 由 AgentCommander 以 owned process tree 管理。Timeout 會先
 
 設定檔位於 `%LOCALAPPDATA%\AgentCommander\config.json`。模型 profile 只引用 Pi 已配置的 model identifier；AgentCommander 不下載模型、不修改 Pi provider 設定，也不會在 profile 遺失時偷偷 fallback。
 
+### A/B benchmark
+
+Run `python scripts/prepare_benchmark.py` to create two identical disposable Git projects: `direct` and `agentcommander`. Run the same `BENCHMARK_PROMPT.md` in both: do the first without delegation and the second with AgentCommander AUTO. Fill each `BENCHMARK_RESULT.json` with the Codex client usage, elapsed time, repairs, tests, and quality notes; for the delegated run also copy `cost_metrics.worker` from `get_task_result`. Compare quality and tests first, then only the metrics actually available. Never treat Qwen tokens as Codex quota.
+
 ## DEVELOPER
 
 ```powershell
