@@ -34,7 +34,7 @@ def _create_project(path: Path, label: str) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     (path / "BENCHMARK_PROMPT.md").write_text(PROMPT, encoding="utf-8")
-    (path / "BENCHMARK_RESULT.json").write_text(json.dumps({"label": label, "started_at": None, "finished_at": None, "codex_usage": "fill from Codex client; unavailable if not shown", "codex_repairs": None, "tests": None, "quality_notes": "", "agentcommander_task_id": None, "worker_metrics": "copy cost_metrics.worker from get_task_result when applicable"}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    (path / "BENCHMARK_RESULT.json").write_text(json.dumps({"schema_version": 2, "label": label, "run_id": None, "started_at": None, "finished_at": None, "elapsed_seconds": None, "codex_usage": "fill from Codex client; unavailable if not shown", "codex_repairs": None, "tests": None, "quality_notes": "", "agentcommander_task_id": None, "worker_metrics": {"runtime_seconds": None, "input_tokens": None, "output_tokens": None, "cache_read_tokens": None, "cache_write_tokens": None, "local_repairs": None, "loop_guard_warnings": None, "loop_guard_stops": None, "stop_reason": None}, "commander_overhead_ratio": "calculate only from comparable client-reported Codex usage"}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     _git(path, "init", "-q")
     _git(path, "add", ".")
     subprocess.run(["git", "-c", "user.name=AgentCommander benchmark", "-c", "user.email=benchmark@localhost", "commit", "-qm", "seed"], cwd=path, check=True)

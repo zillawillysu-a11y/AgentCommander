@@ -1,5 +1,17 @@
 # AgentCommander 0.2.0
 
+## Bounded delegation protocol
+
+`delegate_pi` accepts a `task_kind`: `IMPLEMENT`, `REFACTOR`, `TEST`, `DIAGNOSE`, `SEARCH`, or `REVIEW`. Read-only kinds are read-only by default; every task still uses explicit acceptance criteria, `allowed_paths`, a Git baseline, and deterministic verification. The Worker contract requires the smallest valid patch and forbids opportunistic cleanup, architecture redesign, dependency additions, public API changes, and scope expansion unless explicitly authorized.
+
+`get_task_result` is the compact Commander response. A successful response contains only acceptance state, summary, changed files, test counts, repair count, elapsed time, basic Worker usage, and stop reason; stdout, stderr, detailed checks, path attribution, and artifact paths stay on local disk. Call `get_task_diagnostics` explicitly for a failed or partial task that needs investigation.
+
+The runtime watchdog consumes Pi's JSONL `tool_execution_start` and `tool_execution_end` events. It detects duplicate calls, equivalent repeated failures, short 2-4 action cycles, repeated idempotent reads, no-progress windows, and scope-specific tool budgets. Defaults warn/stop at 2/3 identical actions, warn/stop at 2/3 cycle laps, stop after 20 no-progress actions, and allow 40/80/140 tool actions for SMALL/NORMAL/LARGE. A guard stop preserves the worktree and logs, terminates the owned process tree, and runs deterministic verification when safe.
+
+Mechanical verification failures (targeted command, diff-check, or required-file failures without a safety error) receive up to two local repair attempts by default. Each repair is a fresh `--no-session` Worker with only a compact objective, acceptance criteria, allowed paths, changed files, failing command, and bounded output tails. Path attribution, baseline, process lifecycle, prompt delivery, dependency/API/architecture decisions, ambiguity, repeated guard stops, and exhausted repairs escalate to the Commander.
+
+Codex integration installs a small discovery/safety block in the global `AGENTS.md` and the detailed on-demand Skill at `~/.agents/skills/agent-commander/SKILL.md`. Install, update, and removal touch only AgentCommander's managed block and managed Skill file. AUTO uses an inspectable delegation gate: delegate bounded substantial or repetitive work only when it is likely to save Commander effort; direct Codex remains preferable for trivial edits and architecture decisions. FORCE strongly prefers suitable implementation delegation, while OFF blocks it.
+
 AgentCommander 讓 Codex 擔任 Commander，並在適合時透過 MCP 把實作里程碑交給 Pi / Local Qwen。Codex 保留規劃、審查、deterministic verification 與最終決策權。runtime state 固定存放在 `%LOCALAPPDATA%\AgentCommander`，不會寫入工作專案；既有 `.agentcommander/` portable handoff 仍受支援。
 
 ## END USER

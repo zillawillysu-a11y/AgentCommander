@@ -58,14 +58,10 @@ def test_worker_timeout_selection():
         server.select_worker_timeout("LARGE", requested=14401)
 
 
-def test_managed_guidance_contains_timeout_policy():
-    assert "SMALL/repair 1800s" in integration.RULES
-    assert "normal substantial work 3600s" in integration.RULES
-    assert "large milestones" in integration.RULES and "5400s" in integration.RULES
-    assert "do not loop `wait_for_task`" in integration.RULES
-    assert "omit `max_output_tokens` for normal/large work" in integration.RULES
-    assert "at or below 30%" in integration.RULES
-    assert "accept the work without re-investigating" in integration.RULES
+def test_managed_guidance_is_small_and_routes_to_skill():
+    assert "agent-commander` Skill" in integration.RULES
+    assert "30%" not in integration.RULES
+    assert len(integration.RULES.encode()) < 600
 
 
 def test_status_exposes_latest_task(monkeypatch, machine_config):
@@ -115,6 +111,17 @@ def test_managed_block_lifecycle_and_preservation(tmp_path):
     integration.install_managed_block(path); assert path.read_text(encoding="utf-8").count(integration.BEGIN) == 1
     assert integration.remove_managed_block(path); result = path.read_text(encoding="utf-8")
     assert "custom rules" in result and integration.BEGIN not in result
+
+
+def test_skill_lifecycle_preserves_unrelated_files(tmp_path):
+    target = tmp_path / "agent-commander"
+    target.mkdir(parents=True)
+    unrelated = target / "notes.txt"; unrelated.write_text("keep", encoding="utf-8")
+    integration.install_skill(target)
+    assert "name: agent-commander" in (target / "SKILL.md").read_text(encoding="utf-8")
+    assert integration.remove_skill(target)
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    assert target.exists()
 
 
 def test_command_generation_windows_spaces(monkeypatch):

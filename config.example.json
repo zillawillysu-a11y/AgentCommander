@@ -2,6 +2,7 @@
   "mode": "AUTO",
   "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2},
   "worker": {"language": "en", "fresh_session": true, "default_profile": "qwen-main", "max_output_tokens": null},
+  "guard": {"enabled": true, "repeat_warn": 2, "repeat_stop": 3, "cycle_warn_laps": 2, "cycle_stop_laps": 3, "no_progress_actions": 20, "tool_budgets": {"SMALL": 40, "NORMAL": 80, "LARGE": 140}},
   "models": {"qwen-main": {"pi_model": "<machine-local Pi model identifier>"}},
   "output": {"max_return_lines": 150},
   "runtime": {"state_root": null}

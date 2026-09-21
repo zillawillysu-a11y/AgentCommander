@@ -15,6 +15,7 @@ from .verifier import changed_paths, verify
 mcp = FastMCP("agent-commander", log_level="ERROR")
 WORKER_TIMEOUTS = {"SMALL": 1800, "NORMAL": 3600, "LARGE": 5400}
 MAX_WORKER_TIMEOUT = 14400
+TASK_KINDS = {"IMPLEMENT", "REFACTOR", "TEST", "DIAGNOSE", "SEARCH", "REVIEW"}
 
 
 def select_worker_timeout(task_scope="NORMAL", requested=None, repair_of=None):
@@ -28,7 +29,7 @@ def select_worker_timeout(task_scope="NORMAL", requested=None, repair_of=None):
     return timeout
 
 
-def _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds):
+def _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds, task_kind):
     root = Path(project_root).resolve()
     if not root.is_dir() or not (root / ".git").exists():
         raise ValueError("project_root 必須是現有 Git repository")
@@ -42,20 +43,23 @@ def _validate(project_root, objective, acceptance_criteria, allowed_paths, verif
         raise ValueError("verification_commands 必須是 argv 陣列清單")
     if timeout_seconds < 1 or timeout_seconds > MAX_WORKER_TIMEOUT:
         raise ValueError(f"timeout_seconds 範圍為 1–{MAX_WORKER_TIMEOUT}")
+    if task_kind not in TASK_KINDS:
+        raise ValueError(f"task_kind must be one of {', '.join(sorted(TASK_KINDS))}")
     if any(s["status"] in ACTIVE for s in store_list()):
         raise ValueError("V0.1 同時只能執行一個 Pi Worker")
     return root
 
 
 @mcp.tool()
-def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None) -> dict:
+def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str], allowed_paths: list[str], verification_commands: list[list[str]], timeout_seconds: int | None = None, optional_context: str = "", required_files: list[str] | None = None, repair_of: str | None = None, model_profile: str | None = None, task_scope: str = "NORMAL", max_output_tokens: int | None = None, task_kind: str = "IMPLEMENT") -> dict:
     """啟動全新 Pi/Qwen Milestone。task_scope: SMALL=1800, NORMAL=3600, LARGE=5400 秒；repair 預設 SMALL。"""
     config = load_config()
     if config["mode"] == "OFF":
         raise ValueError("AGENT_COMMANDER_DISABLED")
     timeout_seconds = select_worker_timeout(task_scope, timeout_seconds, repair_of)
     selected_profile, pi_model = resolve_profile(model_profile, config)
-    root = _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds)
+    task_kind = str(task_kind).upper()
+    root = _validate(project_root, objective, acceptance_criteria, allowed_paths, verification_commands, timeout_seconds, task_kind)
     for relative in required_files or []:
         candidate = (root / relative).resolve()
         if not candidate.is_relative_to(root):
@@ -67,7 +71,7 @@ def delegate_pi(project_root: str, objective: str, acceptance_criteria: list[str
     output_limit = max_output_tokens if max_output_tokens is not None else config["worker"].get("max_output_tokens")
     if output_limit is not None and (not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 1):
         raise ValueError("max_output_tokens must be a positive integer or null")
-    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "task_scope": task_scope.upper(), "max_output_tokens": output_limit, "optional_context": optional_context[:8000], "required_files": required_files or [], "repair_of": repair_of, "model_profile": selected_profile, "pi_model": pi_model, "preexisting_paths": changed_paths(root), "shared_worktree": True}
+    spec = {"project_root": str(root), "objective": objective, "acceptance_criteria": acceptance_criteria, "allowed_paths": allowed_paths, "verification_commands": verification_commands, "timeout_seconds": timeout_seconds, "task_scope": task_scope.upper(), "task_kind": task_kind, "max_output_tokens": output_limit, "optional_context": optional_context[:8000], "required_files": required_files or [], "repair_of": repair_of, "model_profile": selected_profile, "pi_model": pi_model, "preexisting_paths": changed_paths(root), "shared_worktree": True}
     handoff = load_handoff(root)
     if handoff:
         spec["portable_handoff"] = "\n\n".join(f"{name}:\n{content[:6000]}" for name, content in handoff.items())[:12000]
@@ -141,8 +145,23 @@ def get_task_result(task_id: str) -> dict:
     if not path.exists():
         return {"task_id": task_id, "status": status(task_id)["status"], "result": "尚未產生"}
     data = read_json(path)
-    keys = ("task_id", "milestone", "worker_status", "status", "exit_code", "prompt_delivered", "worker_claim_status", "worker_summary", "worker_files_changed", "usage", "malformed_jsonl_lines", "verification", "worker_process_result", "worker_claim_result", "test_result", "path_validation", "final_acceptance", "budget", "cost_metrics", "warnings", "artifacts")
-    return {key: data[key] for key in keys if key in data}
+    verification = data.get("verification", {})
+    commands = [item for item in verification.get("checks", []) if item.get("type") == "command"]
+    usage = data.get("usage", {})
+    return {"task_id": task_id, "status": data.get("status"), "verified": verification.get("status") == "PASS", "summary": data.get("worker_summary", ""), "changed_files": verification.get("changed_paths", data.get("worker_files_changed", [])), "tests": {"status": data.get("test_result", {}).get("status", "UNAVAILABLE"), "commands_passed": sum(item.get("exit_code") == 0 for item in commands), "commands_failed": sum(item.get("exit_code") != 0 for item in commands)}, "verification": verification.get("status", "UNAVAILABLE"), "repair_attempts": data.get("cost_metrics", {}).get("repair_count", 0), "elapsed_seconds": data.get("cost_metrics", {}).get("worker", {}).get("elapsed_seconds", "unavailable"), "worker_usage": {key: usage.get(key, "unavailable") for key in ("input_tokens", "output_tokens")}, "stop_reason": data.get("stop_reason")}
+
+
+@mcp.tool()
+def get_task_diagnostics(task_id: str) -> dict:
+    """Return bounded failure and guard diagnostics only on explicit request."""
+    folder = task_dir(task_id)
+    path = folder / "result.json"
+    if not path.exists():
+        return {"task_id": task_id, "status": status(task_id)["status"], "diagnostics": "not available"}
+    data = read_json(path)
+    verification = data.get("verification", {})
+    checks = [{key: item.get(key) for key in ("type", "argv", "path", "passed", "exit_code", "stdout_tail", "stderr_tail", "stdout_log", "stderr_log") if key in item} for item in verification.get("checks", [])]
+    return {"task_id": task_id, "status": data.get("status"), "stop_reason": data.get("stop_reason"), "verification_errors": verification.get("errors", []), "checks": checks, "path_validation": verification.get("path_validation"), "worker_claim": data.get("worker_claim_result"), "artifacts": data.get("artifacts"), "loop_guard": data.get("loop_guard"), "repair_history": data.get("repair_history", [])}
 
 
 @mcp.tool()

@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODES = {"OFF", "AUTO", "FORCE"}
-DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None, "max_output_tokens": None}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
+DEFAULT = {"mode": "AUTO", "pi": {"command": "pi", "default_timeout_seconds": 3600, "max_repairs": 2}, "worker": {"language": "en", "fresh_session": True, "default_profile": None, "max_output_tokens": None}, "guard": {"enabled": True, "repeat_warn": 2, "repeat_stop": 3, "cycle_warn_laps": 2, "cycle_stop_laps": 3, "no_progress_actions": 20, "tool_budgets": {"SMALL": 40, "NORMAL": 80, "LARGE": 140}}, "models": {}, "output": {"max_return_lines": 150}, "runtime": {"state_root": None}}
 
 def local_data_root():
     value = os.environ.get("LOCALAPPDATA")
@@ -34,6 +34,11 @@ def validate_config(config):
     if default is not None and not isinstance(default, str): raise ValueError("default_profile must be a string or null")
     output_limit = config["worker"].get("max_output_tokens")
     if output_limit is not None and (not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 1): raise ValueError("max_output_tokens must be a positive integer or null")
+    guard = config["guard"]
+    positive = ("repeat_warn", "repeat_stop", "cycle_warn_laps", "cycle_stop_laps", "no_progress_actions")
+    if any(not isinstance(guard.get(key), int) or isinstance(guard.get(key), bool) or guard[key] < 1 for key in positive): raise ValueError("guard thresholds must be positive integers")
+    if guard["repeat_warn"] >= guard["repeat_stop"] or guard["cycle_warn_laps"] >= guard["cycle_stop_laps"]: raise ValueError("guard warning threshold must be below stop threshold")
+    if set(guard["tool_budgets"]) != {"SMALL", "NORMAL", "LARGE"} or any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in guard["tool_budgets"].values()): raise ValueError("guard tool_budgets must define positive SMALL, NORMAL, and LARGE limits")
     return config
 
 def load_config(root=None):

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-mcp = Analysis(['agentcommander_mcp.py'], pathex=['.'], hiddenimports=['commander.server', 'commander.pi_worker', 'commander.doctor'], datas=[('prompts', 'prompts')])
-gui = Analysis(['agentcommander_gui.py'], pathex=['.'], hiddenimports=['commander.gui'], datas=[('prompts', 'prompts')])
+mcp = Analysis(['agentcommander_mcp.py'], pathex=['.'], hiddenimports=['commander.server', 'commander.pi_worker', 'commander.doctor'], datas=[('prompts', 'prompts'), ('skills', 'skills')])
+gui = Analysis(['agentcommander_gui.py'], pathex=['.'], hiddenimports=['commander.gui'], datas=[('prompts', 'prompts'), ('skills', 'skills')])
 benchmark = Analysis(['agentcommander_benchmark_gui.py'], pathex=['.'], hiddenimports=['commander.benchmark'], datas=[])
 mcp_pyz = PYZ(mcp.pure)
 gui_pyz = PYZ(gui.pure)
