@@ -1,58 +1,75 @@
 # AgentCommander 0.2.0
 
-## Bounded delegation protocol
+AgentCommander 讓 Codex 擔任規劃、審查與最終決策者，並透過 MCP 將適合的 repository 工作交給本機 Pi / Qwen Worker。所有任務都受 Git baseline、允許路徑、明確驗收條件及確定性驗證約束；runtime state 預設保存在 `%LOCALAPPDATA%\AgentCommander`，不寫入目標 repository。
 
-`delegate_pi` accepts a `task_kind`: `IMPLEMENT`, `REFACTOR`, `TEST`, `DIAGNOSE`, `SEARCH`, or `REVIEW`. Read-only kinds are read-only by default; every task still uses explicit acceptance criteria, `allowed_paths`, a Git baseline, and deterministic verification. The Worker contract requires the smallest valid patch and forbids opportunistic cleanup, architecture redesign, dependency additions, public API changes, and scope expansion unless explicitly authorized.
-
-`get_task_result` is the compact Commander response. A successful response contains only acceptance state, summary, changed files, test counts, repair count, elapsed time, basic Worker usage, and stop reason; stdout, stderr, detailed checks, path attribution, and artifact paths stay on local disk. Call `get_task_diagnostics` explicitly for a failed or partial task that needs investigation.
-
-Task completion is durable and push-capable. `delegate_pi` accepts an optional repository-relative `completion_report`; when omitted, an existing root-level `BENCHMARK_RESULT.json` is selected automatically. The Worker atomically merges verified status, tests, timing, and Worker metrics into that report. It also records a durable completion event and the MCP server sends an `agentcommander.task.completed` notice while the originating connection is alive. Missed events remain available through `list_completion_notifications` until acknowledged.
-
-When delegation originates in an Orca-managed Codex terminal, AgentCommander captures that terminal handle and injects a fixed completion signal after final verification. This starts the follow-up Codex turn that reads and reports the result. If no unique writable Codex terminal can be identified, no terminal is guessed; the durable completion event remains available instead.
-
-The runtime watchdog consumes Pi's JSONL `tool_execution_start` and `tool_execution_end` events. It detects duplicate calls, equivalent repeated failures, short 2-4 action cycles, repeated idempotent reads, no-progress windows, and scope-specific tool budgets. Defaults warn/stop at 2/3 identical actions, warn/stop at 2/3 cycle laps, stop after 20 no-progress actions, and allow 40/80/140 tool actions for SMALL/NORMAL/LARGE. A guard stop preserves the worktree and logs, terminates the owned process tree, and runs deterministic verification when safe.
-
-On Windows, background Worker, watchdog Git, verification, repair, and termination subprocesses use no-window creation flags so the portable application does not repeatedly open console windows. Verification ignores only recognized disposable Python execution artifacts (`__pycache__`, `.pyc`, `.pyo`, and `.pytest_cache`) for source attribution, reports them separately in diagnostics, and still rejects other undeclared paths or non-generated verification side effects.
-
-Mechanical verification failures (targeted command, diff-check, or required-file failures without a safety error) receive up to two local repair attempts by default. Each repair is a fresh `--no-session` Worker with only a compact objective, acceptance criteria, allowed paths, changed files, failing command, and bounded output tails. Path attribution, baseline, process lifecycle, prompt delivery, dependency/API/architecture decisions, ambiguity, repeated guard stops, and exhausted repairs escalate to the Commander.
-
-Final acceptance is separate from test execution. Mutating IMPLEMENT, REFACTOR, and TEST tasks cannot complete with zero Worker-attributed changes; a missing structured Worker claim or an assistant response truncated by the model output limit produces PARTIAL even when existing verification commands pass. Diagnostics expose these acceptance reasons without copying unfinished reasoning or code into the compact result.
-
-Codex integration installs a small discovery/safety block in the global `AGENTS.md` and the detailed on-demand Skill at `~/.agents/skills/agent-commander/SKILL.md`. Install, update, and removal touch only AgentCommander's managed block and managed Skill file. AUTO uses an inspectable delegation gate: delegate bounded substantial or repetitive work only when it is likely to save Commander effort; direct Codex remains preferable for trivial edits and architecture decisions. FORCE strongly prefers suitable implementation delegation, while OFF blocks it.
-
-AgentCommander 讓 Codex 擔任 Commander，並在適合時透過 MCP 把實作里程碑交給 Pi / Local Qwen。Codex 保留規劃、審查、deterministic verification 與最終決策權。runtime state 固定存放在 `%LOCALAPPDATA%\AgentCommander`，不會寫入工作專案；既有 `.agentcommander/` portable handoff 仍受支援。
-
-## END USER
+## 使用者安裝
 
 1. 下載並解壓縮 `AgentCommander-Portable.zip`。
-2. 執行 `AgentCommander.exe`，選擇 `AUTO`（建議）或其他模式。
-3. 在 **Worker Models** 從 Pi 已發現的模型建立別名，例如 `qwen-main`，並設為 Default。
-4. 按 **Install Codex Integration**，狀態顯示 READY 後即可關閉 GUI。
-5. 在 Orca 開啟任何 Git project，照常使用 Codex；不需手動啟動 Pi、輸入 `delegate_pi`，也不需每次提醒使用 AgentCommander。
+2. 執行 `AgentCommander.exe`，選擇 `AUTO`、`FORCE` 或 `OFF`。
+3. 在 **Worker Models** 確認 Pi 已找到可用模型，並設定 Default profile。
+4. 按下 **Install Codex Integration**，確認狀態為 READY。
+5. 在 Orca 開啟既有 Git repository，再請 Codex 使用 AgentCommander。
 
-GUI 只是設定控制程式，不是 daemon。關閉後 Codex 仍會按需啟動 `AgentCommanderMCP.exe mcp`。Portable 版內含 Python runtime；使用者電腦仍須有 Codex CLI、Pi、已配置的 Local Qwen，以及專案流程所需的 Git。
+AgentCommander 需要 Git 來建立 baseline 與驗證變更範圍。若資料夾尚未初始化，執行：
 
-### Modes
+```powershell
+git -C "C:\path\to\project" init
+```
 
-- **OFF**：禁止 Pi delegation；`delegate_pi` 會以 `AGENT_COMMANDER_DISABLED` 硬性失敗。
-- **AUTO**：預設模式。Codex 對 substantial implementation、debugging、refactoring、repo investigation 與 tests 自行判斷是否委派。
-- **FORCE**：coding implementation 強烈優先委派；純問答、工具不可用或使用者明確要求不用時除外。
+`git init` 只建立本機 repository，不會把檔案上傳到 GitHub。
 
-使用者當次指示（例如「這次不要用 AgentCommander」）只覆蓋目前工作，不修改全域模式。
+GUI 是設定程式，不是常駐 daemon。關閉後 Codex 仍可按需啟動 `AgentCommanderMCP.exe mcp`。Portable 版包含 Python runtime，但電腦仍須有 Git、Codex CLI、Pi，以及已配置的本機模型。
 
-Worker lifetime 依工作範圍選擇：小型或 repair 為 1800 秒、一般 substantial implementation 為 3600 秒、明顯大型 milestone 或大型 repository refactor 為 5400 秒；仍受 14,400 秒安全上限約束。`wait_for_task` timeout 只控制 polling，不會改變 worker lifetime。
+## 模式
 
-Windows worker 由 AgentCommander 以 owned process tree 管理。Timeout 會先進入 `TERMINATING`，以 Job Object／PID tree 終止並確認所有已記錄 descendants 消失後才成為 `TIMED_OUT`；若無法確認則為 `TERMINATION_FAILED` 或 `ORPHAN_WORKER`，全域 single-worker slot 會保持鎖定，禁止下一個 delegation。
+- **OFF**：禁止 Worker delegation；`delegate_pi` 回傳 `AGENT_COMMANDER_DISABLED`。
+- **AUTO**：只在 substantial implementation、debugging、refactoring、repository investigation、tests 或重複性工作確實可能節省 Commander 成本時委派。
+- **FORCE**：強烈偏好委派合適的 coding implementation；架構決策、微小修改與不適合 Worker 的工作仍由 Codex 處理。
 
-每個 task result 會分開記錄 Worker process、Worker claim、測試、path validation、final acceptance、Worker token/runtime 與成本觀測。Qwen 的 input/output/cache-read token 只能作為本機 Worker 資源指標；Codex 規劃、等待、MCP tool calls、review、repair 用量只有平台提供時才填入，否則明確標示不可取得，不會估算 Codex 額度或金額。要比較 Codex 直接完成與 Codex＋Qwen，必須使用範圍和品質相近的多筆 task result；單次 Worker token 或測試通過不足以宣稱節省。
+使用者當下的明確指示永遠優先於模式設定。
 
-設定檔位於 `%LOCALAPPDATA%\AgentCommander\config.json`。模型 profile 只引用 Pi 已配置的 model identifier；AgentCommander 不下載模型、不修改 Pi provider 設定，也不會在 profile 遺失時偷偷 fallback。
+## 有界委派協定
 
-### A/B benchmark
+`delegate_pi` 支援 `IMPLEMENT`、`REFACTOR`、`TEST`、`DIAGNOSE`、`SEARCH` 與 `REVIEW`。每個任務都要提供 objective、acceptance criteria、allowed paths 與 verification commands。Worker contract 要求最小有效修改，禁止未授權的順手清理、架構重設、相依套件、公用 API 變更或範圍擴張。
 
-Run `python scripts/prepare_benchmark.py` to create two identical disposable Git projects: `direct` and `agentcommander`. Run the same `BENCHMARK_PROMPT.md` in both: do the first without delegation and the second with AgentCommander AUTO. Fill each `BENCHMARK_RESULT.json` with the Codex client usage, elapsed time, repairs, tests, and quality notes; for the delegated run also copy `cost_metrics.worker` from `get_task_result`. Compare quality and tests first, then only the metrics actually available. Never treat Qwen tokens as Codex quota.
+Worker lifetime 預設為：
 
-## DEVELOPER
+- SMALL 或 repair：1800 秒
+- 一般 substantial work：3600 秒
+- LARGE milestone 或大型 refactor：5400 秒
+- 安全上限：14,400 秒
+
+`wait_for_task` 的 timeout 只控制單次查詢，不會改變 Worker lifetime。
+
+### 結果與驗證
+
+`get_task_result` 回傳精簡結果：驗收狀態、摘要、變更檔案、測試計數、repair 次數、耗時、Worker usage 與停止原因。stdout、stderr、詳細檢查、路徑歸屬及 artifact paths 留在本機；只有 FAILED 或 PARTIAL 且需要調查時才呼叫 `get_task_diagnostics`。
+
+最終驗收與測試執行分開判定。會修改檔案的任務若沒有 Worker 歸屬變更、缺少結構化 Worker claim，或模型輸出被截斷，即使既有 verification command 通過也不能標記為完成。
+
+Runtime watchdog 會偵測重複呼叫、等價失敗、短週期循環、重複唯讀、長時間無進度及 scope 工具預算。Windows 上的 Worker、Git、驗證、repair 與終止程序均以無視窗方式啟動，並追蹤 owned process tree，避免殘留子程序。
+
+### 完成報告與通知
+
+`delegate_pi` 可指定 repository-relative `completion_report`；若未指定但根目錄已有 `BENCHMARK_RESULT.json`，會自動選用。Worker 完成後以 atomic write 合併驗證狀態、測試、耗時及 Worker metrics。
+
+每次完成都會寫入耐久事件。連線仍存在時，MCP 會傳送 `agentcommander.task.completed` notice；漏接事件可由 `list_completion_notifications` 讀取並 acknowledge。
+
+若任務從 Orca-managed Codex terminal 委派，AgentCommander 還會記住來源 terminal，完成後注入固定訊號以啟動後續 Codex 回合。無法唯一辨識 terminal 時不會猜測，仍保留耐久事件供其他 client 查詢。
+
+## A/B benchmark 與 P2 gate
+
+執行 `python scripts/prepare_benchmark.py` 會建立兩個相同的 disposable Git projects：`direct` 與 `agentcommander`。兩邊使用相同的 `BENCHMARK_PROMPT.md`，先比較品質與測試，再比較實際可取得的 Codex usage、elapsed time、repair 與 Worker metrics。Qwen token 不等於 Codex quota。
+
+P2 repo map / context filter 目前刻意延後。只有在至少 10 個 NORMAL/LARGE 任務中，出現下列任一情況才開始實作：
+
+- 至少 30% 任務因探索造成 loop-guard warning、工具預算壓力或錯讀大量無關檔案。
+- 探索性讀取平均超過 15 次，且可證明影響完成時間或品質。
+- 大型 repository 的重複實驗顯示 bounded repo map 能降低至少 20% 探索呼叫，且不降低成功率。
+
+設計細節見 `docs/P2_REPO_MAP_DESIGN.md`。
+
+## 開發
 
 ```powershell
 git clone https://github.com/zillawillysu-a11y/AgentCommander.git
@@ -62,7 +79,7 @@ python -m pytest -q
 python -m commander
 ```
 
-Source mode 保留 `python -m commander` STDIO MCP 與既有 bootstrap/doctor 流程。建立 Windows Portable：
+建立並驗證 Windows Portable release：
 
 ```powershell
 .\build.ps1
@@ -73,10 +90,13 @@ Source mode 保留 `python -m commander` STDIO MCP 與既有 bootstrap/doctor �
 ```text
 dist\AgentCommander\AgentCommander.exe
 dist\AgentCommander\AgentCommanderMCP.exe
-dist\AgentCommander\_internal\...
+dist\AgentCommander\AgentCommanderBenchmark.exe
 dist\AgentCommander-Portable.zip
+dist\AgentCommander-Portable.zip.sha256
 ```
 
-`AgentCommanderMCP.exe` 支援 `mcp`、`worker <task-id>`、`doctor --json`。Codex integration 只管理名為 `agent-commander` 的 MCP 與全域 `AGENTS.md` 中界定清楚的 managed block；移除時不碰其他 MCP 或使用者規則。
+`build.ps1` 會先建立封裝版、執行完整測試，再以真正的 packaged helper 執行 process-tree 與 output-budget integration tests；任何一步失敗都不會產生可發布 ZIP。
 
-機器上的實際 model ID、credentials、auth、runtime state、worker logs 與建置輸出不得提交到公開 repository。
+`AgentCommanderMCP.exe` 支援 `mcp`、`worker <task-id>` 與 `doctor --json`。Codex integration 只管理名為 `agent-commander` 的 MCP、全域 `AGENTS.md` 中的 managed block，以及 managed Skill；移除時不修改其他 MCP 或使用者規則。
+
+公開 repository 不得提交模型檔、credentials、auth、runtime state、Worker logs、task records 或本機設定。

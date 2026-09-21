@@ -2,6 +2,8 @@
 
 P2 is intentionally deferred until the P0/P1 runtime changes have more production evidence. It should remain an optional, local, bounded optimization rather than a new indexing subsystem.
 
+Implementation gate: collect at least 10 NORMAL/LARGE production tasks, then proceed only if at least 30% show exploration-related loop-guard/tool-budget pressure, exploratory reads average more than 15 per task with measurable cost, or a controlled prototype reduces exploration calls by at least 20% without lowering completion quality. Until one threshold is met, P2 remains design-only.
+
 Proposed interface:
 
 - `build_repo_map(project_root, candidate_paths, token_budget=1000) -> RepoMap`

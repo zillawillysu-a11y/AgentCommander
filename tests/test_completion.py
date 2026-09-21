@@ -78,3 +78,22 @@ def test_connected_client_receives_completion_notice(monkeypatch):
     monkeypatch.setattr(server, "mark_event", lambda task_id, field: event)
     asyncio.run(server._push_completion_notice("TASK-000123", Context()))
     assert delivered == [("notice", event, "agent-commander")]
+
+
+def test_disconnected_client_keeps_durable_notice_unacknowledged(monkeypatch):
+    event = {"task_id": "TASK-000123", "event": "agentcommander.task.completed", "delivered_at": None}
+    marked = []
+
+    class Session:
+        async def send_log_message(self, *args, **kwargs):
+            raise ConnectionError("client disconnected")
+
+    class Context:
+        session = Session()
+
+    monkeypatch.setattr(server, "status", lambda task_id: {"status": "COMPLETED"})
+    monkeypatch.setattr(server, "list_completion_events", lambda **kwargs: [event])
+    monkeypatch.setattr(server, "mark_event", lambda task_id, field: marked.append((task_id, field)))
+    asyncio.run(server._push_completion_notice("TASK-000123", Context()))
+    assert marked == []
+    assert event["delivered_at"] is None
